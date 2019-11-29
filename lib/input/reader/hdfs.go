@@ -21,13 +21,14 @@
 package reader
 
 import (
+	"context"
 	"path/filepath"
 	"time"
 
-	"github.com/Jeffail/benthos/lib/log"
-	"github.com/Jeffail/benthos/lib/message"
-	"github.com/Jeffail/benthos/lib/metrics"
-	"github.com/Jeffail/benthos/lib/types"
+	"github.com/Jeffail/benthos/v3/lib/log"
+	"github.com/Jeffail/benthos/v3/lib/message"
+	"github.com/Jeffail/benthos/v3/lib/metrics"
+	"github.com/Jeffail/benthos/v3/lib/types"
 	"github.com/colinmarc/hdfs"
 )
 
@@ -81,6 +82,12 @@ func NewHDFS(
 
 // Connect attempts to establish a connection to the target HDFS host.
 func (h *HDFS) Connect() error {
+	return h.ConnectWithContext(context.Background())
+}
+
+// ConnectWithContext attempts to establish a connection to the target HDFS
+// host.
+func (h *HDFS) ConnectWithContext(ctx context.Context) error {
 	if h.client != nil {
 		return nil
 	}
@@ -94,7 +101,6 @@ func (h *HDFS) Connect() error {
 	}
 
 	h.client = client
-
 	targets, err := client.ReadDir(h.conf.Directory)
 	if err != nil {
 		return err
@@ -111,6 +117,15 @@ func (h *HDFS) Connect() error {
 }
 
 //------------------------------------------------------------------------------
+
+// ReadWithContext reads a new HDFS message.
+func (h *HDFS) ReadWithContext(ctx context.Context) (types.Message, AsyncAckFn, error) {
+	msg, err := h.Read()
+	if err != nil {
+		return nil, nil, err
+	}
+	return msg, noopAsyncAckFn, nil
+}
 
 // Read a new HDFS message.
 func (h *HDFS) Read() (types.Message, error) {

@@ -23,7 +23,7 @@ package parallel
 import (
 	"sync"
 
-	"github.com/Jeffail/benthos/lib/types"
+	"github.com/Jeffail/benthos/v3/lib/types"
 )
 
 //------------------------------------------------------------------------------
@@ -31,8 +31,9 @@ import (
 // Memory is a parallel buffer implementation that allows multiple parallel
 // consumers to read and purge messages from the buffer asynchronously.
 type Memory struct {
-	messages []types.Message
-	bytes    int
+	messages     []types.Message
+	bytes        int
+	pendingBytes int
 
 	cap  int
 	cond *sync.Cond
@@ -74,7 +75,9 @@ func (m *Memory) NextMessage() (types.Message, AckFunc, error) {
 		messageSize += len(b.Get())
 		return nil
 	})
+	m.pendingBytes += messageSize
 
+	m.cond.Broadcast()
 	m.cond.L.Unlock()
 
 	return msg, func(ack bool) (int, error) {
@@ -83,6 +86,7 @@ func (m *Memory) NextMessage() (types.Message, AckFunc, error) {
 			m.cond.L.Unlock()
 			return 0, types.ErrTypeClosed
 		}
+		m.pendingBytes -= messageSize
 		if ack {
 			m.bytes -= messageSize
 		} else {
@@ -141,7 +145,7 @@ func (m *Memory) PushMessage(msg types.Message) (int, error) {
 // until the close is completed.
 func (m *Memory) CloseOnceEmpty() {
 	m.cond.L.Lock()
-	for m.bytes > 0 && !m.closed {
+	for (m.bytes-m.pendingBytes > 0) && !m.closed {
 		m.cond.Wait()
 	}
 	if !m.closed {

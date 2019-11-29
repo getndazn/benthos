@@ -27,7 +27,7 @@ import (
 	"net/http"
 	"regexp"
 
-	"github.com/Jeffail/benthos/lib/log"
+	"github.com/Jeffail/benthos/v3/lib/log"
 )
 
 //------------------------------------------------------------------------------
@@ -41,9 +41,6 @@ Rename metric paths as they are registered.
 Metrics must be matched using dot notation even if the chosen output uses a
 different form. For example, the path would be 'foo.bar' rather than 'foo_bar'
 even when sending metrics to Prometheus.
-
-The ` + "`prefix`" + ` field in a metrics config is ignored by this type. Please
-configure a prefix at the child level.
 
 ### ` + "`by_regexp`" + `
 
@@ -261,7 +258,7 @@ func (r *Rename) GetCounter(path string) StatCounter {
 }
 
 // GetCounterVec returns a stat counter object for a path with the labels
-// discarded.
+// and values.
 func (r *Rename) GetCounterVec(path string, n []string) StatCounterVec {
 	rpath, _ := r.renamePath(path)
 	return r.s.GetCounterVec(rpath, n)
@@ -283,7 +280,7 @@ func (r *Rename) GetTimer(path string) StatTimer {
 }
 
 // GetTimerVec returns a stat timer object for a path with the labels
-// discarded.
+// and values.
 func (r *Rename) GetTimerVec(path string, n []string) StatTimerVec {
 	rpath, _ := r.renamePath(path)
 	return r.s.GetTimerVec(rpath, n)

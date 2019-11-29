@@ -22,15 +22,17 @@ package reader
 
 import (
 	"context"
+	"strconv"
 	"sync"
 	"time"
 
 	"cloud.google.com/go/pubsub"
-	"github.com/Jeffail/benthos/lib/log"
-	"github.com/Jeffail/benthos/lib/message"
-	"github.com/Jeffail/benthos/lib/message/metadata"
-	"github.com/Jeffail/benthos/lib/metrics"
-	"github.com/Jeffail/benthos/lib/types"
+	"github.com/Jeffail/benthos/v3/lib/log"
+	"github.com/Jeffail/benthos/v3/lib/message"
+	"github.com/Jeffail/benthos/v3/lib/message/batch"
+	"github.com/Jeffail/benthos/v3/lib/message/metadata"
+	"github.com/Jeffail/benthos/v3/lib/metrics"
+	"github.com/Jeffail/benthos/v3/lib/types"
 )
 
 //------------------------------------------------------------------------------
@@ -41,17 +43,22 @@ type GCPPubSubConfig struct {
 	SubscriptionID         string `json:"subscription" yaml:"subscription"`
 	MaxOutstandingMessages int    `json:"max_outstanding_messages" yaml:"max_outstanding_messages"`
 	MaxOutstandingBytes    int    `json:"max_outstanding_bytes" yaml:"max_outstanding_bytes"`
-	MaxBatchCount          int    `json:"max_batch_count" yaml:"max_batch_count"`
+	// TODO: V4 Remove this.
+	MaxBatchCount int                `json:"max_batch_count" yaml:"max_batch_count"`
+	Batching      batch.PolicyConfig `json:"batching" yaml:"batching"`
 }
 
 // NewGCPPubSubConfig creates a new Config with default values.
 func NewGCPPubSubConfig() GCPPubSubConfig {
+	batchConf := batch.NewPolicyConfig()
+	batchConf.Count = 1
 	return GCPPubSubConfig{
 		ProjectID:              "",
 		SubscriptionID:         "",
 		MaxOutstandingMessages: pubsub.DefaultReceiveSettings.MaxOutstandingMessages,
 		MaxOutstandingBytes:    pubsub.DefaultReceiveSettings.MaxOutstandingBytes,
 		MaxBatchCount:          1,
+		Batching:               batchConf,
 	}
 }
 
@@ -96,6 +103,12 @@ func NewGCPPubSub(
 
 // Connect attempts to establish a connection to the target subscription.
 func (c *GCPPubSub) Connect() error {
+	return c.ConnectWithContext(context.Background())
+}
+
+// ConnectWithContext attempts to establish a connection to the target
+// subscription.
+func (c *GCPPubSub) ConnectWithContext(ignored context.Context) error {
 	c.subMut.Lock()
 	defer c.subMut.Unlock()
 	if c.subscription != nil {
@@ -135,6 +148,43 @@ func (c *GCPPubSub) Connect() error {
 	return nil
 }
 
+// ReadWithContext attempts to read a new message from the target subscription.
+func (c *GCPPubSub) ReadWithContext(ctx context.Context) (types.Message, AsyncAckFn, error) {
+	c.subMut.Lock()
+	msgsChan := c.msgsChan
+	c.subMut.Unlock()
+	if msgsChan == nil {
+		return nil, nil, types.ErrNotConnected
+	}
+
+	msg := message.New(nil)
+
+	var gmsg *pubsub.Message
+	var open bool
+	select {
+	case gmsg, open = <-msgsChan:
+	case <-ctx.Done():
+		return nil, nil, types.ErrTimeout
+	}
+	if !open {
+		return nil, nil, types.ErrNotConnected
+	}
+
+	part := message.NewPart(gmsg.Data)
+	part.SetMetadata(metadata.New(gmsg.Attributes))
+	part.Metadata().Set("gcp_pubsub_publish_time_unix", strconv.FormatInt(gmsg.PublishTime.Unix(), 10))
+	msg.Append(part)
+
+	return msg, func(ctx context.Context, res types.Response) error {
+		if res.Error() != nil {
+			gmsg.Nack()
+		} else {
+			gmsg.Ack()
+		}
+		return nil
+	}, nil
+}
+
 // Read attempts to read a new message from the target subscription.
 func (c *GCPPubSub) Read() (types.Message, error) {
 	c.subMut.Lock()
@@ -153,6 +203,7 @@ func (c *GCPPubSub) Read() (types.Message, error) {
 	c.pendingMsgs = append(c.pendingMsgs, gmsg)
 	part := message.NewPart(gmsg.Data)
 	part.SetMetadata(metadata.New(gmsg.Attributes))
+	part.Metadata().Set("gcp_pubsub_publish_time_unix", strconv.FormatInt(gmsg.PublishTime.Unix(), 10))
 	msg.Append(part)
 
 batchLoop:
@@ -169,6 +220,7 @@ batchLoop:
 		c.pendingMsgs = append(c.pendingMsgs, gmsg)
 		part := message.NewPart(gmsg.Data)
 		part.SetMetadata(metadata.New(gmsg.Attributes))
+		part.Metadata().Set("gcp_pubsub_publish_time_unix", strconv.FormatInt(gmsg.PublishTime.Unix(), 10))
 		msg.Append(part)
 	}
 

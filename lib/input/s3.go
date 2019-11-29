@@ -21,10 +21,10 @@
 package input
 
 import (
-	"github.com/Jeffail/benthos/lib/input/reader"
-	"github.com/Jeffail/benthos/lib/log"
-	"github.com/Jeffail/benthos/lib/metrics"
-	"github.com/Jeffail/benthos/lib/types"
+	"github.com/Jeffail/benthos/v3/lib/input/reader"
+	"github.com/Jeffail/benthos/v3/lib/log"
+	"github.com/Jeffail/benthos/v3/lib/metrics"
+	"github.com/Jeffail/benthos/v3/lib/types"
 )
 
 //------------------------------------------------------------------------------
@@ -43,10 +43,11 @@ If the download manager is enabled this can help speed up file downloads but
 results in file metadata not being copied.
 
 If your bucket is configured to send events directly to an SQS queue then you
-need to set the ` + "`sqs_body_path`" + ` field to where the object key is found
-in the payload. However, it is also common practice to send bucket events to an
-SNS topic which sends enveloped events to SQS, in which case you must also set
-the ` + "`sqs_envelope_path`" + ` field to where the payload can be found.
+need to set the ` + "`sqs_body_path`" + ` field to a
+[dot path](../field_paths.md) where the object key is found in the payload.
+However, it is also common practice to send bucket events to an SNS topic which
+sends enveloped events to SQS, in which case you must also set the
+` + "`sqs_envelope_path`" + ` field to where the payload can be found.
 
 When using SQS events it's also possible to extract target bucket names from the
 events by specifying a path in the field ` + "`sqs_bucket_path`" + `. For each
@@ -100,13 +101,20 @@ You can access these metadata fields using
 
 // NewAmazonS3 creates a new AWS S3 input type.
 func NewAmazonS3(conf Config, mgr types.Manager, log log.Modular, stats metrics.Type) (Type, error) {
+	// TODO: V4 Remove this.
+	if conf.S3.MaxBatchCount > 1 {
+		log.Warnf("Field '%v.max_batch_count' is deprecated, use the batching methods outlined in https://docs.benthos.dev/batching instead.\n", conf.Type)
+	}
 	r, err := reader.NewAmazonS3(conf.S3, log, stats)
 	if err != nil {
 		return nil, err
 	}
-	return NewReader(
-		"s3",
-		reader.NewPreserver(r),
+	return NewAsyncReader(
+		TypeS3,
+		true,
+		reader.NewAsyncBundleUnacks(
+			reader.NewAsyncPreserver(r),
+		),
 		log, stats,
 	)
 }

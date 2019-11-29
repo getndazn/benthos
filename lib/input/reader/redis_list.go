@@ -21,15 +21,16 @@
 package reader
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 	"sync"
 	"time"
 
-	"github.com/Jeffail/benthos/lib/log"
-	"github.com/Jeffail/benthos/lib/message"
-	"github.com/Jeffail/benthos/lib/metrics"
-	"github.com/Jeffail/benthos/lib/types"
+	"github.com/Jeffail/benthos/v3/lib/log"
+	"github.com/Jeffail/benthos/v3/lib/message"
+	"github.com/Jeffail/benthos/v3/lib/metrics"
+	"github.com/Jeffail/benthos/v3/lib/types"
 	"github.com/go-redis/redis"
 )
 
@@ -96,6 +97,11 @@ func NewRedisList(
 
 // Connect establishes a connection to a Redis server.
 func (r *RedisList) Connect() error {
+	return r.ConnectWithContext(context.Background())
+}
+
+// ConnectWithContext establishes a connection to a Redis server.
+func (r *RedisList) ConnectWithContext(ctx context.Context) error {
 	r.cMut.Lock()
 	defer r.cMut.Unlock()
 
@@ -125,6 +131,12 @@ func (r *RedisList) Connect() error {
 
 // Read attempts to pop a message from a Redis list.
 func (r *RedisList) Read() (types.Message, error) {
+	msg, _, err := r.ReadWithContext(context.Background())
+	return msg, err
+}
+
+// ReadWithContext attempts to pop a message from a Redis list.
+func (r *RedisList) ReadWithContext(ctx context.Context) (types.Message, AsyncAckFn, error) {
 	var client *redis.Client
 
 	r.cMut.Lock()
@@ -132,7 +144,7 @@ func (r *RedisList) Read() (types.Message, error) {
 	r.cMut.Unlock()
 
 	if client == nil {
-		return nil, types.ErrNotConnected
+		return nil, nil, types.ErrNotConnected
 	}
 
 	res, err := client.BLPop(r.timeout, r.conf.Key).Result()
@@ -140,14 +152,14 @@ func (r *RedisList) Read() (types.Message, error) {
 	if err != nil && err != redis.Nil {
 		r.disconnect()
 		r.log.Errorf("Error from redis: %v\n", err)
-		return nil, types.ErrNotConnected
+		return nil, nil, types.ErrNotConnected
 	}
 
 	if len(res) < 2 {
-		return nil, types.ErrTimeout
+		return nil, nil, types.ErrTimeout
 	}
 
-	return message.New([][]byte{[]byte(res[1])}), nil
+	return message.New([][]byte{[]byte(res[1])}), noopAsyncAckFn, nil
 }
 
 // Acknowledge is a noop since Redis Lists do not support acknowledgements.

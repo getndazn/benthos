@@ -21,36 +21,43 @@
 package reader
 
 import (
+	"context"
+	"fmt"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/Jeffail/benthos/lib/log"
-	"github.com/Jeffail/benthos/lib/message"
-	"github.com/Jeffail/benthos/lib/metrics"
-	"github.com/Jeffail/benthos/lib/types"
+	"github.com/Jeffail/benthos/v3/lib/log"
+	"github.com/Jeffail/benthos/v3/lib/message"
+	"github.com/Jeffail/benthos/v3/lib/message/batch"
+	"github.com/Jeffail/benthos/v3/lib/metrics"
+	"github.com/Jeffail/benthos/v3/lib/types"
 	"github.com/gofrs/uuid"
-	stan "github.com/nats-io/go-nats-streaming"
+	"github.com/nats-io/stan.go"
 )
 
 //------------------------------------------------------------------------------
 
 // NATSStreamConfig contains configuration fields for the NATSStream input type.
 type NATSStreamConfig struct {
-	URLs            []string `json:"urls" yaml:"urls"`
-	ClusterID       string   `json:"cluster_id" yaml:"cluster_id"`
-	ClientID        string   `json:"client_id" yaml:"client_id"`
-	QueueID         string   `json:"queue" yaml:"queue"`
-	DurableName     string   `json:"durable_name" yaml:"durable_name"`
-	UnsubOnClose    bool     `json:"unsubscribe_on_close" yaml:"unsubscribe_on_close"`
-	StartFromOldest bool     `json:"start_from_oldest" yaml:"start_from_oldest"`
-	Subject         string   `json:"subject" yaml:"subject"`
-	MaxInflight     int      `json:"max_inflight" yaml:"max_inflight"`
+	URLs            []string           `json:"urls" yaml:"urls"`
+	ClusterID       string             `json:"cluster_id" yaml:"cluster_id"`
+	ClientID        string             `json:"client_id" yaml:"client_id"`
+	QueueID         string             `json:"queue" yaml:"queue"`
+	DurableName     string             `json:"durable_name" yaml:"durable_name"`
+	UnsubOnClose    bool               `json:"unsubscribe_on_close" yaml:"unsubscribe_on_close"`
+	StartFromOldest bool               `json:"start_from_oldest" yaml:"start_from_oldest"`
+	Subject         string             `json:"subject" yaml:"subject"`
+	MaxInflight     int                `json:"max_inflight" yaml:"max_inflight"`
+	AckWait         string             `json:"ack_wait" yaml:"ack_wait"`
+	Batching        batch.PolicyConfig `json:"batching" yaml:"batching"`
 }
 
 // NewNATSStreamConfig creates a new NATSStreamConfig with default values.
 func NewNATSStreamConfig() NATSStreamConfig {
+	batchConf := batch.NewPolicyConfig()
+	batchConf.Count = 1
 	return NATSStreamConfig{
 		URLs:            []string{stan.DefaultNatsURL},
 		ClusterID:       "test-cluster",
@@ -61,6 +68,8 @@ func NewNATSStreamConfig() NATSStreamConfig {
 		StartFromOldest: true,
 		Subject:         "benthos_messages",
 		MaxInflight:     1024,
+		AckWait:         "30s",
+		Batching:        batchConf,
 	}
 }
 
@@ -68,8 +77,10 @@ func NewNATSStreamConfig() NATSStreamConfig {
 
 // NATSStream is an input type that receives NATSStream messages.
 type NATSStream struct {
-	urls  string
-	conf  NATSStreamConfig
+	urls    string
+	conf    NATSStreamConfig
+	ackWait time.Duration
+
 	stats metrics.Type
 	log   log.Modular
 
@@ -84,7 +95,7 @@ type NATSStream struct {
 }
 
 // NewNATSStream creates a new NATSStream input type.
-func NewNATSStream(conf NATSStreamConfig, log log.Modular, stats metrics.Type) (Type, error) {
+func NewNATSStream(conf NATSStreamConfig, log log.Modular, stats metrics.Type) (*NATSStream, error) {
 	if len(conf.ClientID) == 0 {
 		u4, err := uuid.NewV4()
 		if err != nil {
@@ -92,8 +103,18 @@ func NewNATSStream(conf NATSStreamConfig, log log.Modular, stats metrics.Type) (
 		}
 		conf.ClientID = u4.String()
 	}
+
+	var ackWait time.Duration
+	if tout := conf.AckWait; len(tout) > 0 {
+		var err error
+		if ackWait, err = time.ParseDuration(tout); err != nil {
+			return nil, fmt.Errorf("failed to parse ack_wait string: %v", err)
+		}
+	}
+
 	n := NATSStream{
 		conf:          conf,
+		ackWait:       ackWait,
 		stats:         stats,
 		log:           log,
 		msgChan:       make(chan *stan.Msg),
@@ -124,6 +145,12 @@ func (n *NATSStream) disconnect() {
 
 // Connect attempts to establish a connection to a NATS streaming server.
 func (n *NATSStream) Connect() error {
+	return n.ConnectWithContext(context.Background())
+}
+
+// ConnectWithContext attempts to establish a connection to a NATS streaming
+// server.
+func (n *NATSStream) ConnectWithContext(ctx context.Context) error {
 	n.cMut.Lock()
 	defer n.cMut.Unlock()
 
@@ -175,6 +202,9 @@ func (n *NATSStream) Connect() error {
 	if n.conf.MaxInflight != 0 {
 		options = append(options, stan.MaxInflight(n.conf.MaxInflight))
 	}
+	if n.ackWait > 0 {
+		options = append(options, stan.AckWait(n.ackWait))
+	}
 
 	var natsSub stan.Subscription
 	if len(n.conf.QueueID) > 0 {
@@ -203,8 +233,7 @@ func (n *NATSStream) Connect() error {
 	return nil
 }
 
-// Read attempts to read a new message from the NATS streaming server.
-func (n *NATSStream) Read() (types.Message, error) {
+func (n *NATSStream) read(ctx context.Context) (*stan.Msg, error) {
 	var msg *stan.Msg
 	var open bool
 	select {
@@ -212,12 +241,44 @@ func (n *NATSStream) Read() (types.Message, error) {
 		if !open {
 			return nil, types.ErrNotConnected
 		}
-		n.unAckMsgs = append(n.unAckMsgs, msg)
+	case <-ctx.Done():
+		return nil, types.ErrTimeout
 	case <-n.interruptChan:
 		n.unAckMsgs = nil
 		n.disconnect()
 		return nil, types.ErrTypeClosed
 	}
+	return msg, nil
+}
+
+// ReadWithContext attempts to read a new message from the NATS streaming
+// server.
+func (n *NATSStream) ReadWithContext(ctx context.Context) (types.Message, AsyncAckFn, error) {
+	msg, err := n.read(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	bmsg := message.New([][]byte{msg.Data})
+	bmsg.Get(0).Metadata().Set("nats_stream_subject", msg.Subject)
+	bmsg.Get(0).Metadata().Set("nats_stream_sequence", strconv.FormatUint(msg.Sequence, 10))
+
+	return bmsg, func(rctx context.Context, res types.Response) error {
+		if res.Error() == nil {
+			return msg.Ack()
+		}
+		return nil
+	}, nil
+}
+
+// Read attempts to read a new message from the NATS streaming server.
+func (n *NATSStream) Read() (types.Message, error) {
+	msg, err := n.read(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	n.unAckMsgs = append(n.unAckMsgs, msg)
+
 	bmsg := message.New([][]byte{msg.Data})
 	bmsg.Get(0).Metadata().Set("nats_stream_subject", msg.Subject)
 	bmsg.Get(0).Metadata().Set("nats_stream_sequence", strconv.FormatUint(msg.Sequence, 10))

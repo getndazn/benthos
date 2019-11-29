@@ -24,8 +24,9 @@ input:
     prefix: ""
     region: eu-west-1
     retries: 3
-    sqs_body_path: Records.s3.object.key
+    sqs_body_path: Records.*.s3.object.key
     sqs_bucket_path: ""
+    sqs_endpoint: ""
     sqs_envelope_path: ""
     sqs_max_messages: 10
     sqs_url: ""
@@ -51,12 +52,14 @@ output:
       token: ""
     endpoint: ""
     force_path_style_urls: false
+    kms_key_id: ""
     path: ${!count:files}-${!timestamp_unix_nano}.txt
     region: eu-west-1
     timeout: 5s
 resources:
   caches: {}
   conditions: {}
+  processors: {}
   rate_limits: {}
 logger:
   prefix: benthos
@@ -67,8 +70,8 @@ logger:
     '@service': benthos
 metrics:
   type: http_server
-  http_server: {}
-  prefix: benthos
+  http_server:
+    prefix: benthos
 tracer:
   type: none
   none: {}

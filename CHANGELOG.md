@@ -5,11 +5,223 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
-### Added
+## 3.6.0 - TBD
+
+### Added
+
+- New `workflow` processor.
+- New `resource` processor.
+- Processors can now be registered within the `resources` section of a config.
+
+### Changed
+
+- The `mqtt` output field `topic` field now supports interpolation functions.
+
+### Fixed
+
+- The `kafka` output no longer attempts to send headers on old versions of the
+  protocol.
+
+## 3.5.0 - 2019-11-26
+
+### Added
+
+- New `regexp_expand` operator added to the `text` processor.
+- New `json_schema` processor.
+
+## 3.4.0 - 2019-11-12
+
+### Added
+
+- New `amqp_0_9` output which replaces the now deprecated `amqp` output.
+- The `broker` output now supports batching.
+
+### Fixed
+
+- The `memory` buffer now allows parallel processing of batched payloads.
+- Version and date information should now be correctly displayed in archive
+  distributions.
+
+## 3.3.1 - 2019-10-21
+
+### Fixed
+
+- The `s3` input now correctly unescapes bucket keys when streaming from SQS.
+
+## 3.3.0 - 2019-10-20
+
+### Added
+
+- Field `sqs_endpoint` added to the `s3` input.
+- Field `kms_key_id` added to the `s3` output.
+- Operator `delete` added to `metadata` processor.
+- New experimental metrics aggregator `stdout`.
+- Field `ack_wait` added to `nats_stream` input.
+- New `batching` field added to `broker` input for batching merged streams.
+- Field `healthcheck` added to `elasticsearch` output.
+- New `json_schema` condition.
+
+### Changed
+
+- Experimental `kafka_cg` input has been removed.
+- The `kafka_balanced` inputs underlying implementation has been replaced with
+  the `kafka_cg` one.
+- All inputs have been updated to automatically utilise >1 processing threads,
+  with the exception of `kafka` and `kinesis`.
+
+## 3.2.0 - 2019-09-27
+
+### Added
+
+- New `is` operator added to `text` condition.
+- New config unit test condition `content_matches`.
+- Field `init_values` added to the `memory` cache.
+- New `split` operator added to `json` processor.
+- Fields `user` and `password` added to `mqtt` input and output.
+- New experimental `amqp_0_9` input.
+
+### Changed
+
+- Linting is now disabled for the environment var config shipped with docker
+  images, this should prevent the log spam on start up.
+- Go API: Experimental `reader.Async` component methods renamed.
+
+## 3.1.1 - 2019-09-23
+
+### Fixed
+
+- Prevented `kafka_cg` input lock up after batch policy period trigger with no
+  backlog.
+
+## 3.1.0 - 2019-09-23
+
+### Added
+
+- New `redis` processor.
+- New `kinesis_firehose` output.
+- New experimental `kafka_cg` input.
+- Go API: The `metrics.Local` aggregator now supports labels.
+
+### Fixed
+
+- The `json` processor no longer removes content moved from a path to the same
+  path.
+
+## 3.0.0 - 2019-09-17
+
+This is a major version release, for more information and guidance on how to
+migrate please refer to [https://docs.benthos.dev/migration/v3/](https://docs.benthos.dev/migration/v3/).
+
+### Added
+
+- The `json` processor now allows you to `move` from either a root source or to
+  a root destination.
+- Added interpolation to the `metadata` processor `key` field.
+- Granular retry fields added to `kafka` output.
+
+### Changed
+
+- Go modules are now fully supported, imports must now include the major version
+  (e.g. `github.com/Jeffail/benthos/v3`).
+- Removed deprecated `mmap_file` buffer.
+- Removed deprecated (and undocumented) metrics paths.
+- Moved field `prefix` from root of `metrics` into relevant child components.
+- Names of `process_dag` stages must now match the regexp `[a-zA-Z0-9_-]+`.
+- Go API: buffer constructors now take a `types.Manager` argument in parity with
+  other components.
+- JSON dot paths within the following components have been updated to allow
+  array-based operations:
+  + `awk` processor
+  + `json` processor
+  + `process_field` processor
+  + `process_map` processor
+  + `check_field` condition
+  + `json_field` function interpolation
+  + `s3` input
+  + `dynamodb` output
+
+### Fixed
+
+- The `sqs` output no longer attempts to send invalid attributes with payloads
+  from metadata.
+- During graceful shutdown Benthos now scales the attempt to propagate acks for
+  sent messages with the overall system shutdown period.
+
+## 2.15.1 - 2019-09-10
+
+### Fixed
+
+- The `s3` and `sqs` inputs should now correctly log handles and codes from
+  failed SQS message deletes and visibility timeout changes.
+
+## 2.15.0 - 2019-09-03
+
+### Added
+
+- New `message_group_id` and `message_deduplication_id` fields added to `sqs`
+  output for supporting FIFO queues.
+
+## 2.14.0 - 2019-08-29
+
+### Added
+
+- Metadata field `gcp_pubsub_publish_time_unix` added to `gcp_pubsub` input.
+- New `tcp` and `tcp_server` inputs.
+- New `udp_server` input.
+- New `tcp` and `udp` outputs.
+- Metric paths `output.batch.bytes` and `output.batch.latency` added.
+- New `rate_limit` processor.
+
+### Fixed
+
+- The `json` processor now correctly stores parsed `value` JSON when using `set`
+  on the root path.
+
+## 2.13.0 - 2019-08-27
+
+### Added
+
+- The `sqs` input now adds some message attributes as metadata.
+- Added field `delete_message` to `sqs` input.
+- The `sqs` output now sends metadata as message attributes.
+- New `batch_policy` field added to `memory` buffer.
+- New `xml` processor.
+
+### Fixed
+
+- The `prometheus` metrics exporter adds quantiles back to timing metrics.
+
+## 2.12.2 - 2019-08-19
+
+### Fixed
+
+- Capped slices from lines reader are now enforced.
+- The `json` processor now correctly honours a `null` value.
+
+## 2.12.1 - 2019-08-16
+
+### Changed
+
+- Disabled `kinesis_balanced` input for WASM builds.
+
+## 2.12.0 - 2019-08-16
+
+### Added
 
 - Field `codec` added to `process_field` processor.
 - Removed experimental status from sync responses components, which are now
   considered stable.
+- Field `pattern_definitions` added to `grok` processor.
+
+### Changed
+
+- Simplified serverless lambda main function body for improving plugin
+  documentation.
+
+### Fixed
+
+- Fixed a bug where the `prepend` and `append` operators of the `text` processor
+  could result in invalid messages when consuming line-based inputs.
 
 ## 2.11.2 - 2019-08-06
 

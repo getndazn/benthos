@@ -27,17 +27,18 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sync"
 	"testing"
 	"time"
 
-	"github.com/Jeffail/benthos/lib/log"
-	"github.com/Jeffail/benthos/lib/manager"
-	"github.com/Jeffail/benthos/lib/message"
-	"github.com/Jeffail/benthos/lib/message/roundtrip"
-	"github.com/Jeffail/benthos/lib/metrics"
-	"github.com/Jeffail/benthos/lib/ratelimit"
-	"github.com/Jeffail/benthos/lib/response"
-	"github.com/Jeffail/benthos/lib/types"
+	"github.com/Jeffail/benthos/v3/lib/log"
+	"github.com/Jeffail/benthos/v3/lib/manager"
+	"github.com/Jeffail/benthos/v3/lib/message"
+	"github.com/Jeffail/benthos/v3/lib/message/roundtrip"
+	"github.com/Jeffail/benthos/v3/lib/metrics"
+	"github.com/Jeffail/benthos/v3/lib/ratelimit"
+	"github.com/Jeffail/benthos/v3/lib/response"
+	"github.com/Jeffail/benthos/v3/lib/types"
 	"github.com/gorilla/websocket"
 )
 
@@ -346,12 +347,15 @@ func TestHTTPServerWebsockets(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	wg := sync.WaitGroup{}
+	wg.Add(1)
 	go func() {
-		if err = client.WriteMessage(
+		if clientErr := client.WriteMessage(
 			websocket.BinaryMessage, []byte("hello world 1"),
-		); err != nil {
-			t.Fatal(err)
+		); clientErr != nil {
+			t.Fatal(clientErr)
 		}
+		wg.Done()
 	}()
 
 	var ts types.Transaction
@@ -368,13 +372,16 @@ func TestHTTPServerWebsockets(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Error("Timed out waiting for response")
 	}
+	wg.Wait()
 
+	wg.Add(1)
 	go func() {
-		if err = client.WriteMessage(
+		if closeErr := client.WriteMessage(
 			websocket.BinaryMessage, []byte("hello world 2"),
-		); err != nil {
-			t.Fatal(err)
+		); closeErr != nil {
+			t.Fatal(closeErr)
 		}
+		wg.Done()
 	}()
 
 	select {
@@ -390,6 +397,7 @@ func TestHTTPServerWebsockets(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Error("Timed out waiting for response")
 	}
+	wg.Wait()
 
 	h.CloseAsync()
 	if err := h.WaitForClose(time.Second * 5); err != nil {

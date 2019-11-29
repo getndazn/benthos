@@ -27,12 +27,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/Jeffail/benthos/lib/log"
-	"github.com/Jeffail/benthos/lib/message"
-	"github.com/Jeffail/benthos/lib/message/tracing"
-	"github.com/Jeffail/benthos/lib/metrics"
-	"github.com/Jeffail/benthos/lib/response"
-	"github.com/Jeffail/benthos/lib/types"
+	"github.com/Jeffail/benthos/v3/lib/log"
+	"github.com/Jeffail/benthos/v3/lib/message"
+	"github.com/Jeffail/benthos/v3/lib/message/tracing"
+	"github.com/Jeffail/benthos/v3/lib/metrics"
+	"github.com/Jeffail/benthos/v3/lib/response"
+	"github.com/Jeffail/benthos/v3/lib/types"
 )
 
 //------------------------------------------------------------------------------
@@ -85,25 +85,19 @@ func NewLineWriter(
 func (w *LineWriter) loop() {
 	// Metrics paths
 	var (
-		mRunning      = w.stats.GetGauge("running")
-		mCount        = w.stats.GetCounter("count")
-		mPartsCount   = w.stats.GetCounter("parts.count")
-		mSuccess      = w.stats.GetCounter("send.success")
-		mPartsSuccess = w.stats.GetCounter("parts.send.success")
-		mSent         = w.stats.GetCounter("batch.sent")
-		mPartsSent    = w.stats.GetCounter("sent")
-		mError        = w.stats.GetCounter("error")
+		mCount     = w.stats.GetCounter("count")
+		mPartsSent = w.stats.GetCounter("sent")
+		mSent      = w.stats.GetCounter("batch.sent")
+		mBytesSent = w.stats.GetCounter("batch.bytes")
+		mLatency   = w.stats.GetTimer("batch.latency")
 	)
 
 	defer func() {
 		if w.closeOnExit {
 			w.handle.Close()
 		}
-		mRunning.Decr(1)
-
 		close(w.closedChan)
 	}()
-	mRunning.Incr(1)
 
 	delim := []byte("\n")
 	if len(w.customDelim) > 0 {
@@ -119,7 +113,6 @@ func (w *LineWriter) loop() {
 				return
 			}
 			mCount.Incr(1)
-			mPartsCount.Incr(int64(ts.Payload.Len()))
 		case <-w.closeChan:
 			return
 		}
@@ -127,18 +120,18 @@ func (w *LineWriter) loop() {
 		spans := tracing.CreateChildSpans("output_"+w.typeStr, ts.Payload)
 
 		var err error
+		t0 := time.Now()
 		if ts.Payload.Len() == 1 {
 			_, err = fmt.Fprintf(w.handle, "%s%s", ts.Payload.Get(0).Get(), delim)
 		} else {
 			_, err = fmt.Fprintf(w.handle, "%s%s%s", bytes.Join(message.GetAllBytes(ts.Payload), delim), delim, delim)
 		}
-		if err != nil {
-			mError.Incr(1)
-		} else {
-			mSuccess.Incr(1)
-			mPartsSuccess.Incr(int64(ts.Payload.Len()))
+		latency := time.Since(t0).Nanoseconds()
+		if err == nil {
 			mSent.Incr(1)
 			mPartsSent.Incr(int64(ts.Payload.Len()))
+			mBytesSent.Incr(int64(message.GetAllBytesLen(ts.Payload)))
+			mLatency.Timing(latency)
 		}
 
 		for _, s := range spans {

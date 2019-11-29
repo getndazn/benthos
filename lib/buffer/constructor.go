@@ -27,11 +27,10 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/Jeffail/benthos/lib/buffer/single"
-	"github.com/Jeffail/benthos/lib/log"
-	"github.com/Jeffail/benthos/lib/metrics"
-	"github.com/Jeffail/benthos/lib/types"
-	"github.com/Jeffail/benthos/lib/util/config"
+	"github.com/Jeffail/benthos/v3/lib/log"
+	"github.com/Jeffail/benthos/v3/lib/metrics"
+	"github.com/Jeffail/benthos/v3/lib/types"
+	"github.com/Jeffail/benthos/v3/lib/util/config"
 	yaml "gopkg.in/yaml.v3"
 )
 
@@ -39,8 +38,9 @@ import (
 
 // TypeSpec is a constructor and usage description for each buffer type.
 type TypeSpec struct {
-	constructor func(conf Config, log log.Modular, stats metrics.Type) (Type, error)
-	description string
+	constructor        func(conf Config, mgr types.Manager, log log.Modular, stats metrics.Type) (Type, error)
+	description        string
+	sanitiseConfigFunc func(conf Config) (interface{}, error)
 }
 
 // Constructors is a map of all buffer types with their specs.
@@ -51,7 +51,6 @@ var Constructors = map[string]TypeSpec{}
 // String constants representing each buffer type.
 const (
 	TypeMemory = "memory"
-	TypeMMAP   = "mmap_file"
 	TypeNone   = "none"
 )
 
@@ -59,18 +58,16 @@ const (
 
 // Config is the all encompassing configuration struct for all buffer types.
 type Config struct {
-	Type   string              `json:"type" yaml:"type"`
-	Memory single.MemoryConfig `json:"memory" yaml:"memory"`
-	Mmap   MmapBufferConfig    `json:"mmap_file,omitempty" yaml:"mmap_file,omitempty"`
-	None   struct{}            `json:"none" yaml:"none"`
+	Type   string       `json:"type" yaml:"type"`
+	Memory MemoryConfig `json:"memory" yaml:"memory"`
+	None   struct{}     `json:"none" yaml:"none"`
 }
 
 // NewConfig returns a configuration struct fully populated with default values.
 func NewConfig() Config {
 	return Config{
 		Type:   "none",
-		Memory: single.NewMemoryConfig(),
-		Mmap:   NewMmapBufferConfig(),
+		Memory: NewMemoryConfig(),
 		None:   struct{}{},
 	}
 }
@@ -90,7 +87,16 @@ func SanitiseConfig(conf Config) (interface{}, error) {
 
 	outputMap := config.Sanitised{}
 	outputMap["type"] = hashMap["type"]
-	outputMap[conf.Type] = hashMap[conf.Type]
+
+	if sfunc := Constructors[conf.Type].sanitiseConfigFunc; sfunc != nil {
+		if outputMap[conf.Type], err = sfunc(conf); err != nil {
+			return nil, err
+		}
+	} else {
+		if _, exists := hashMap[conf.Type]; exists {
+			outputMap[conf.Type] = hashMap[conf.Type]
+		}
+	}
 
 	return outputMap, nil
 }
@@ -135,8 +141,17 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 
 var header = "This document was generated with `benthos --list-buffers`" + `
 
-Buffers can solve a number of typical streaming problems and are worth
-considering if you face circumstances similar to the following:
+Benthos uses a transaction based model for guaranteeing delivery of messages
+without the need for a buffer. This ensures that messages are never acknowledged
+from a source until the message has left the target sink.
+
+However, sometimes the transaction model is undesired, in which case there are a
+range of buffer options available which decouple input sources from the rest of
+the Benthos pipeline.
+
+Buffers can therefore solve a number of typical streaming problems but come at
+the cost of weakening the delivery guarantees of your pipeline. Common problems
+that might warrant use of a buffer are:
 
 - Input sources can periodically spike beyond the capacity of your output sinks.
 - You want to use parallel [processing pipelines](../pipeline.md).
@@ -156,14 +171,15 @@ different options and their qualities:
 | Type      | Throughput | Consumers | Capacity |
 | --------- | ---------- | --------- | -------- |
 | Memory    | Highest    | Parallel  | RAM      |
-| Mmap File | High       | Single    | Disk     |
 
 #### Delivery Guarantees
 
-| Type      | On Restart | On Crash  | On Disk Corruption |
-| --------- | ---------- | --------- | ------------------ |
-| Memory    | Lost       | Lost      | Lost               |
-| Mmap File | Persisted  | Lost      | Lost               |`
+| Event     | Shutdown  | Crash     | Disk Corruption |
+| --------- | --------- | --------- | --------------- |
+| Memory    | Flushed\* | Lost      | Lost            |
+
+\* Makes a best attempt at flushing the remaining messages before closing
+  gracefully.`
 
 // Descriptions returns a formatted string of collated descriptions of each type.
 func Descriptions() string {
@@ -214,9 +230,9 @@ func Descriptions() string {
 }
 
 // New creates a buffer type based on a buffer configuration.
-func New(conf Config, log log.Modular, stats metrics.Type) (Type, error) {
+func New(conf Config, mgr types.Manager, log log.Modular, stats metrics.Type) (Type, error) {
 	if c, ok := Constructors[conf.Type]; ok {
-		return c.constructor(conf, log, stats)
+		return c.constructor(conf, mgr, log, stats)
 	}
 	return nil, types.ErrInvalidBufferType
 }

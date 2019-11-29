@@ -24,10 +24,10 @@ import (
 	"io"
 	"os"
 
-	"github.com/Jeffail/benthos/lib/input/reader"
-	"github.com/Jeffail/benthos/lib/log"
-	"github.com/Jeffail/benthos/lib/metrics"
-	"github.com/Jeffail/benthos/lib/types"
+	"github.com/Jeffail/benthos/v3/lib/input/reader"
+	"github.com/Jeffail/benthos/v3/lib/log"
+	"github.com/Jeffail/benthos/v3/lib/metrics"
+	"github.com/Jeffail/benthos/v3/lib/types"
 )
 
 //------------------------------------------------------------------------------
@@ -40,6 +40,10 @@ The stdin input simply reads any data piped to stdin as messages. By default the
 messages are assumed single part and are line delimited. If the multipart option
 is set to true then lines are interpretted as message parts, and an empty line
 indicates the end of the message.
+
+Messages consumed by this input can be processed in parallel, meaning a single
+instance of this input can utilise any number of threads within a
+` + "`pipeline`" + ` section of a config.
 
 If the delimiter field is left empty then line feed (\n) is used.`,
 	}
@@ -92,9 +96,9 @@ func NewSTDIN(conf Config, mgr types.Manager, log log.Modular, stats metrics.Typ
 	if err != nil {
 		return nil, err
 	}
-	return NewReader(
-		"stdin",
-		reader.NewCutOff(reader.NewPreserver(rdr)),
+	return NewAsyncReader(
+		TypeSTDIN, true,
+		reader.NewAsyncCutOff(reader.NewAsyncPreserver(rdr)),
 		log, stats,
 	)
 }

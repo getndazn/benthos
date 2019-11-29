@@ -22,12 +22,11 @@ package buffer
 
 import (
 	"encoding/json"
-	"os"
 	"reflect"
 	"testing"
 
-	"github.com/Jeffail/benthos/lib/log"
-	"github.com/Jeffail/benthos/lib/metrics"
+	"github.com/Jeffail/benthos/v3/lib/log"
+	"github.com/Jeffail/benthos/v3/lib/metrics"
 	yaml "gopkg.in/yaml.v3"
 )
 
@@ -41,7 +40,7 @@ func TestConstructorBadType(t *testing.T) {
 	conf := NewConfig()
 	conf.Type = "not_exist"
 
-	if _, err := New(conf, log.New(os.Stdout, logConfig), metrics.DudType{}); err == nil {
+	if _, err := New(conf, nil, log.Noop(), metrics.Noop()); err == nil {
 		t.Error("Expected error, received nil for invalid type")
 	}
 }
@@ -54,7 +53,7 @@ func TestConstructorConfigYAMLInference(t *testing.T) {
 			"memory": {
 				"value": "foo"
 			},
-			"mmap_file": {
+			"none": {
 				"query": "foo"
 			}
 		}
@@ -96,7 +95,7 @@ func TestSanitise(t *testing.T) {
 
 	conf := NewConfig()
 	conf.Type = "none"
-	conf.Mmap.FileSize = 10
+	conf.Memory.Limit = 10
 
 	if actObj, err = SanitiseConfig(conf); err != nil {
 		t.Fatal(err)
@@ -111,6 +110,7 @@ func TestSanitise(t *testing.T) {
 	exp = `{` +
 		`"type":"memory",` +
 		`"memory":{` +
+		`"batch_policy":{"byte_size":0,"condition":{"type":"static","static":false},"count":0,"enabled":false,"period":""},` +
 		`"limit":20` +
 		`}` +
 		`}`

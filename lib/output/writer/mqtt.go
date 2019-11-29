@@ -25,9 +25,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Jeffail/benthos/lib/log"
-	"github.com/Jeffail/benthos/lib/metrics"
-	"github.com/Jeffail/benthos/lib/types"
+	"github.com/Jeffail/benthos/v3/lib/log"
+	"github.com/Jeffail/benthos/v3/lib/message"
+	"github.com/Jeffail/benthos/v3/lib/metrics"
+	"github.com/Jeffail/benthos/v3/lib/types"
+	"github.com/Jeffail/benthos/v3/lib/util/text"
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 )
 
@@ -39,6 +41,8 @@ type MQTTConfig struct {
 	QoS      uint8    `json:"qos" yaml:"qos"`
 	Topic    string   `json:"topic" yaml:"topic"`
 	ClientID string   `json:"client_id" yaml:"client_id"`
+	User     string   `json:"user" yaml:"user"`
+	Password string   `json:"password" yaml:"password"`
 }
 
 // NewMQTTConfig creates a new MQTTConfig with default values.
@@ -48,6 +52,8 @@ func NewMQTTConfig() MQTTConfig {
 		QoS:      1,
 		Topic:    "benthos_topic",
 		ClientID: "benthos_output",
+		User:     "",
+		Password: "",
 	}
 }
 
@@ -58,8 +64,9 @@ type MQTT struct {
 	log   log.Modular
 	stats metrics.Type
 
-	urls []string
-	conf MQTTConfig
+	urls  []string
+	conf  MQTTConfig
+	topic *text.InterpolatedString
 
 	client  mqtt.Client
 	connMut sync.RWMutex
@@ -75,6 +82,8 @@ func NewMQTT(
 		log:   log,
 		stats: stats,
 		conf:  conf,
+
+		topic: text.NewInterpolatedString(conf.Topic),
 	}
 
 	for _, u := range conf.URLs {
@@ -109,6 +118,14 @@ func (m *MQTT) Connect() error {
 		conf = conf.AddBroker(u)
 	}
 
+	if m.conf.User != "" {
+		conf.SetUsername(m.conf.User)
+	}
+
+	if m.conf.Password != "" {
+		conf.SetPassword(m.conf.Password)
+	}
+
 	client := mqtt.NewClient(conf)
 
 	tok := client.Connect()
@@ -134,7 +151,8 @@ func (m *MQTT) Write(msg types.Message) error {
 	}
 
 	return msg.Iter(func(i int, p types.Part) error {
-		mtok := client.Publish(m.conf.Topic, byte(m.conf.QoS), false, p.Get())
+		lMsg := message.Lock(msg, i)
+		mtok := client.Publish(m.topic.Get(lMsg), byte(m.conf.QoS), false, p.Get())
 		mtok.Wait()
 		return mtok.Error()
 	})

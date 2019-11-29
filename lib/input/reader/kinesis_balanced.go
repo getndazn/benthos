@@ -18,17 +18,21 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
+// +build !wasm
+
 package reader
 
 import (
+	"context"
 	"fmt"
 	"time"
 
-	"github.com/Jeffail/benthos/lib/log"
-	"github.com/Jeffail/benthos/lib/message"
-	"github.com/Jeffail/benthos/lib/metrics"
-	"github.com/Jeffail/benthos/lib/types"
-	sess "github.com/Jeffail/benthos/lib/util/aws/session"
+	"github.com/Jeffail/benthos/v3/lib/log"
+	"github.com/Jeffail/benthos/v3/lib/message"
+	"github.com/Jeffail/benthos/v3/lib/message/batch"
+	"github.com/Jeffail/benthos/v3/lib/metrics"
+	"github.com/Jeffail/benthos/v3/lib/types"
+	sess "github.com/Jeffail/benthos/v3/lib/util/aws/session"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/patrobinson/gokini"
 )
@@ -43,12 +47,16 @@ type KinesisBalancedConfig struct {
 	DynamoDBBillingMode   string `json:"dynamodb_billing_mode" yaml:"dynamodb_billing_mode"`
 	DynamoDBReadCapacity  int64  `json:"dynamodb_read_provision" yaml:"dynamodb_read_provision"`
 	DynamoDBWriteCapacity int64  `json:"dynamodb_write_provision" yaml:"dynamodb_write_provision"`
-	MaxBatchCount         int    `json:"max_batch_count" yaml:"max_batch_count"`
-	StartFromOldest       bool   `json:"start_from_oldest" yaml:"start_from_oldest"`
+	// TODO: V4 Remove this.
+	MaxBatchCount   int                `json:"max_batch_count" yaml:"max_batch_count"`
+	Batching        batch.PolicyConfig `json:"batching" yaml:"batching"`
+	StartFromOldest bool               `json:"start_from_oldest" yaml:"start_from_oldest"`
 }
 
 // NewKinesisBalancedConfig creates a new Config with default values.
 func NewKinesisBalancedConfig() KinesisBalancedConfig {
+	batchConf := batch.NewPolicyConfig()
+	batchConf.Count = 1
 	s := sess.NewConfig()
 	return KinesisBalancedConfig{
 		Config:                s,
@@ -58,6 +66,7 @@ func NewKinesisBalancedConfig() KinesisBalancedConfig {
 		DynamoDBReadCapacity:  0,
 		DynamoDBWriteCapacity: 0,
 		MaxBatchCount:         1,
+		Batching:              batchConf,
 		StartFromOldest:       true,
 	}
 }
@@ -125,6 +134,12 @@ func NewKinesisBalanced(
 
 // Connect attempts to establish a connection to the target Kinesis stream.
 func (k *KinesisBalanced) Connect() error {
+	return k.ConnectWithContext(context.Background())
+}
+
+// ConnectWithContext attempts to establish a connection to the target Kinesis
+// stream.
+func (k *KinesisBalanced) ConnectWithContext(ctx context.Context) error {
 	err := k.kc.StartConsumer()
 
 	k.log.Infof("Receiving Amazon Kinesis messages from stream: %v\n", k.conf.Stream)
@@ -136,6 +151,30 @@ func (k *KinesisBalanced) setMetadata(record *gokini.Records, p types.Part) {
 	met.Set("kinesis_shard", k.shardID)
 	met.Set("kinesis_partition_key", record.PartitionKey)
 	met.Set("kinesis_sequence_number", record.SequenceNumber)
+}
+
+// ReadWithContext attempts to read a new message from the target Kinesis
+// stream.
+func (k *KinesisBalanced) ReadWithContext(ctx context.Context) (types.Message, AsyncAckFn, error) {
+	var record *gokini.Records
+	select {
+	case record = <-k.records:
+	case <-ctx.Done():
+		return nil, nil, types.ErrTimeout
+	}
+	if record == nil {
+		return nil, nil, fmt.Errorf("shard '%s' has closed", k.shardID)
+	}
+
+	part := message.NewPart(record.Data)
+	k.setMetadata(record, part)
+
+	msg := message.New(nil)
+	msg.Append(part)
+
+	return msg, func(rctx context.Context, res types.Response) error {
+		return k.kc.Checkpoint(k.shardID, record.SequenceNumber)
+	}, nil
 }
 
 // Read attempts to read a new message from the target Kinesis stream.

@@ -24,10 +24,10 @@ import (
 	"os"
 	"testing"
 
-	"github.com/Jeffail/benthos/lib/log"
-	"github.com/Jeffail/benthos/lib/message"
-	"github.com/Jeffail/benthos/lib/metrics"
-	"github.com/Jeffail/benthos/lib/util/config"
+	"github.com/Jeffail/benthos/v3/lib/log"
+	"github.com/Jeffail/benthos/v3/lib/message"
+	"github.com/Jeffail/benthos/v3/lib/metrics"
+	"github.com/Jeffail/benthos/v3/lib/util/config"
 	yaml "gopkg.in/yaml.v3"
 )
 
@@ -58,20 +58,10 @@ func TestJSONValidation(t *testing.T) {
 	conf.JSON.Operator = "move"
 	conf.JSON.Parts = []int{0}
 	conf.JSON.Path = ""
-	conf.JSON.Value = []byte(`"foo.bar"`)
-
-	if _, err := NewJSON(conf, nil, testLog, metrics.DudType{}); err == nil {
-		t.Error("Expected error from empty move path")
-	}
-
-	conf = NewConfig()
-	conf.JSON.Operator = "move"
-	conf.JSON.Parts = []int{0}
-	conf.JSON.Path = "foo.bar"
 	conf.JSON.Value = []byte(`""`)
 
 	if _, err := NewJSON(conf, nil, testLog, metrics.DudType{}); err == nil {
-		t.Error("Expected error from empty move destination")
+		t.Error("Expected error from empty move paths")
 	}
 
 	conf = NewConfig()
@@ -206,6 +196,13 @@ func TestJSONAppend(t *testing.T) {
 			output: `{"foo":{"bar":[5,{"baz":1}]}}`,
 		},
 		{
+			name:   "append in array 1",
+			path:   "foo.1.bar",
+			value:  `{"baz":1}`,
+			input:  `{"foo":[{"ignored":true},{"bar":5}]}`,
+			output: `{"foo":[{"ignored":true},{"bar":[5,{"baz":1}]}]}`,
+		},
+		{
 			name:   "append nil 1",
 			path:   "foo.bar",
 			value:  `{"baz":1}`,
@@ -277,6 +274,81 @@ func TestJSONAppend(t *testing.T) {
 	}
 }
 
+func TestJSONSplit(t *testing.T) {
+	type jTest struct {
+		name   string
+		path   string
+		value  string
+		input  string
+		output string
+	}
+
+	tests := []jTest{
+		{
+			name:   "split 1",
+			path:   "foo.bar",
+			value:  `","`,
+			input:  `{"foo":{"bar":"1,2,3"}}`,
+			output: `{"foo":{"bar":["1","2","3"]}}`,
+		},
+		{
+			name:   "split 2",
+			path:   "foo.bar",
+			value:  `"-"`,
+			input:  `{"foo":{"bar":"1-2-3"}}`,
+			output: `{"foo":{"bar":["1","2","3"]}}`,
+		},
+		{
+			name:   "split 3",
+			path:   "foo.bar",
+			value:  `"-"`,
+			input:  `{"foo":{"bar":20}}`,
+			output: `{"foo":{"bar":20}}`,
+		},
+		{
+			name:   "split 4",
+			path:   "foo.bar",
+			value:  `","`,
+			input:  `{"foo":{"bar":"1"}}`,
+			output: `{"foo":{"bar":["1"]}}`,
+		},
+		{
+			name:   "split 5",
+			path:   "foo.bar",
+			value:  `","`,
+			input:  `{"foo":{"bar":","}}`,
+			output: `{"foo":{"bar":["",""]}}`,
+		},
+	}
+
+	for _, test := range tests {
+		conf := NewConfig()
+		conf.JSON.Operator = "split"
+		conf.JSON.Parts = []int{0}
+		conf.JSON.Path = test.path
+		conf.JSON.Value = []byte(test.value)
+
+		jSet, err := NewJSON(conf, nil, log.Noop(), metrics.Noop())
+		if err != nil {
+			t.Fatalf("Error for test '%v': %v", test.name, err)
+		}
+
+		inMsg := message.New(
+			[][]byte{
+				[]byte(test.input),
+			},
+		)
+		msgs, _ := jSet.ProcessMessage(inMsg)
+		if len(msgs) != 1 {
+			t.Fatalf("Test '%v' did not succeed", test.name)
+		}
+
+		if exp, act := test.output, string(message.GetAllBytes(msgs[0])[0]); exp != act {
+			t.Errorf("Wrong result '%v': %v != %v", test.name, act, exp)
+		}
+	}
+}
+
 func TestJSONMove(t *testing.T) {
 	tLog := log.New(os.Stdout, log.Config{LogLevel: "NONE"})
 	tStats := metrics.DudType{}
@@ -303,6 +375,27 @@ func TestJSONMove(t *testing.T) {
 			value:  `"bar.baz"`,
 			input:  `{"foo":{"bar":5},"bar":{"qux":6}}`,
 			output: `{"bar":{"baz":5,"qux":6},"foo":{}}`,
+		},
+		{
+			name:   "move to same path 1",
+			path:   "foo.bar",
+			value:  `"foo.bar"`,
+			input:  `{"foo":{"bar":5},"bar":{"qux":6}}`,
+			output: `{"bar":{"qux":6},"foo":{"bar":5}}`,
+		},
+		{
+			name:   "move from root 1",
+			path:   ".",
+			value:  `"bar.baz"`,
+			input:  `{"foo":{"bar":5}}`,
+			output: `{"bar":{"baz":{"foo":{"bar":5}}}}`,
+		},
+		{
+			name:   "move to root 1",
+			path:   "foo",
+			value:  `""`,
+			input:  `{"foo":{"bar":5}}`,
+			output: `{"bar":5}`,
 		},
 	}
 
@@ -595,6 +688,20 @@ func TestJSONSet(t *testing.T) {
 			input:  `{"key":"dynamic","value":{"foo":"bar"}}`,
 			output: `{"dynamic":{"value":"{\"foo\":\"bar\"}"}}`,
 		},
+		{
+			name:   "set null 1",
+			path:   "foo.bar",
+			value:  `null`,
+			input:  `{"foo":{"bar":5}}`,
+			output: `{"foo":{"bar":null}}`,
+		},
+		{
+			name:   "set null 2",
+			path:   "foo.bar",
+			value:  `null`,
+			input:  `{"foo":{"bar":{"baz":"yelp"}}}`,
+			output: `{"foo":{"bar":null}}`,
+		},
 	}
 
 	for _, test := range tests {
@@ -724,6 +831,19 @@ value:
   baz:
     deeper: look at me
   here: 11
+`,
+		`parts:
+- 0
+operator: set
+path: foo.bar
+value: null
+`,
+		`parts:
+- 0
+operator: set
+path: foo.bar
+value:
+  foo: null
 `,
 		`parts:
 - 0

@@ -21,26 +21,32 @@
 package input
 
 import (
-	"github.com/Jeffail/benthos/lib/input/reader"
-	"github.com/Jeffail/benthos/lib/log"
-	"github.com/Jeffail/benthos/lib/metrics"
-	"github.com/Jeffail/benthos/lib/types"
-	"github.com/Jeffail/benthos/lib/util/tls"
+	"github.com/Jeffail/benthos/v3/lib/input/reader"
+	"github.com/Jeffail/benthos/v3/lib/log"
+	"github.com/Jeffail/benthos/v3/lib/metrics"
+	"github.com/Jeffail/benthos/v3/lib/types"
+	"github.com/Jeffail/benthos/v3/lib/util/tls"
 )
 
 //------------------------------------------------------------------------------
 
 func init() {
 	Constructors[TypeKafkaBalanced] = TypeSpec{
-		constructor: NewKafkaBalanced,
+		constructor:                  NewKafkaBalanced,
+		constructorHasBatchProcessor: newKafkaBalancedHasBatchProcessor,
 		description: `
 Connects to a kafka (0.9+) server. Offsets are managed within kafka as per the
 consumer group (set via config), and partitions are automatically balanced
 across any members of the consumer group.
 
-The field ` + "`max_batch_count`" + ` specifies the maximum number of prefetched
-messages to be batched together. When more than one message is batched they can
-be split into individual messages with the ` + "`split`" + ` processor.
+Partitions consumed by this input can be processed in parallel allowing it to
+utilise <= N pipeline processing threads and parallel outputs where N is the
+number of partitions allocated to this consumer.
+
+The ` + "`batching`" + ` fields allow you to configure a
+[batching policy](../batching.md#batch-policy) which will be applied per
+partition. It is not currently possible to use
+[broker based batching](../batching.md#combined-batching) with this input type.
 
 The field ` + "`max_processing_period`" + ` should be set above the maximum
 estimated time taken to process a message.
@@ -67,6 +73,9 @@ message offset.
 
 You can access these metadata fields using
 [function interpolation](../config_interpolation.md#metadata).`,
+		sanitiseConfigFunc: func(conf Config) (interface{}, error) {
+			return sanitiseWithBatch(conf.KafkaBalanced, conf.KafkaBalanced.Batching)
+		},
 	}
 }
 
@@ -74,6 +83,33 @@ You can access these metadata fields using
 
 // NewKafkaBalanced creates a new KafkaBalanced input type.
 func NewKafkaBalanced(conf Config, mgr types.Manager, log log.Modular, stats metrics.Type) (Type, error) {
+	// TODO: V4 Remove this.
+	if conf.KafkaBalanced.MaxBatchCount > 1 {
+		log.Warnf("Field '%v.max_batch_count' is deprecated, use '%v.batching.count' instead.\n", conf.Type, conf.Type)
+		conf.KafkaBalanced.Batching.Count = conf.KafkaBalanced.MaxBatchCount
+	}
+	k, err := reader.NewKafkaCG(conf.KafkaBalanced, mgr, log, stats)
+	if err != nil {
+		return nil, err
+	}
+	preserved := reader.NewAsyncPreserver(k)
+	return NewAsyncReader("kafka_balanced", true, preserved, log, stats)
+}
+
+// DEPRECATED: This is a hack for until the batch processor is removed.
+// TODO: V4 Remove this.
+func newKafkaBalancedHasBatchProcessor(
+	hasBatchProc bool,
+	conf Config,
+	mgr types.Manager,
+	log log.Modular,
+	stats metrics.Type,
+) (Type, error) {
+	if !hasBatchProc {
+		return NewKafkaBalanced(conf, mgr, log, stats)
+	}
+
+	log.Warnln("Detected presence of a 'batch' processor, kafka_balanced input falling back to single threaded mode. To fix this use the 'batching' fields instead.")
 	k, err := reader.NewKafkaBalanced(conf.KafkaBalanced, log, stats)
 	if err != nil {
 		return nil, err

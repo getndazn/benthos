@@ -27,8 +27,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Jeffail/benthos/lib/message"
-	"github.com/Jeffail/benthos/lib/types"
+	"github.com/Jeffail/benthos/v3/lib/message"
+	"github.com/Jeffail/benthos/v3/lib/types"
 )
 
 func TestMemoryBasic(t *testing.T) {
@@ -275,6 +275,47 @@ func TestMemoryClose(t *testing.T) {
 			}
 			if _, err := ackFunc(true); err != nil {
 				t.Error(err)
+			}
+		}
+	}
+
+	if _, _, err := block.NextMessage(); err != types.ErrTypeClosed {
+		t.Errorf("Wrong error returned: %v != %v", err, types.ErrTypeClosed)
+	}
+
+	wg.Wait()
+}
+
+func TestMemoryCloseWithPending(t *testing.T) {
+	block := NewMemory(1000)
+
+	for i := 0; i < 10; i++ {
+		block.PushMessage(message.New([][]byte{
+			[]byte("hello world"),
+		}))
+	}
+
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+
+	go func() {
+		block.CloseOnceEmpty()
+		wg.Done()
+	}()
+
+	<-time.After(time.Millisecond * 100)
+	for i := 0; i < 10; i++ {
+		m, ackFunc, err := block.NextMessage()
+		if err != nil {
+			t.Error(err)
+		} else {
+			if expected, actual := "hello world", string(m.Get(0).Get()); expected != actual {
+				t.Errorf("Wrong message contents, %v != %v", expected, actual)
+			}
+			if i < 9 {
+				if _, err := ackFunc(true); err != nil {
+					t.Error(err)
+				}
 			}
 		}
 	}

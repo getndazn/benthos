@@ -27,10 +27,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Jeffail/benthos/lib/log"
-	"github.com/Jeffail/benthos/lib/message"
-	"github.com/Jeffail/benthos/lib/metrics"
-	"github.com/Jeffail/benthos/lib/output/writer"
+	"github.com/Jeffail/benthos/v3/lib/log"
+	"github.com/Jeffail/benthos/v3/lib/message"
+	"github.com/Jeffail/benthos/v3/lib/metrics"
+	"github.com/Jeffail/benthos/v3/lib/output/writer"
 	"github.com/go-redis/redis"
 	"github.com/ory/dockertest"
 )
@@ -39,6 +39,8 @@ func TestRedisHashIntegration(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
 	}
+
+	t.Parallel()
 
 	pool, err := dockertest.NewPool("")
 	if err != nil {
@@ -50,6 +52,12 @@ func TestRedisHashIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Could not start resource: %s", err)
 	}
+	defer func() {
+		if err = pool.Purge(resource); err != nil {
+			t.Logf("Failed to clean up docker resource: %v", err)
+		}
+	}()
+	resource.Expire(900)
 
 	url := fmt.Sprintf("tcp://localhost:%v", resource.GetPort("6379/tcp"))
 
@@ -70,12 +78,6 @@ func TestRedisHashIntegration(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Could not connect to docker resource: %s", err)
 	}
-
-	defer func() {
-		if err = pool.Purge(resource); err != nil {
-			t.Logf("Failed to clean up docker resource: %v", err)
-		}
-	}()
 
 	t.Run("TestRedisHashSinglePart", func(te *testing.T) {
 		testRedisHashSinglePart(url, te)

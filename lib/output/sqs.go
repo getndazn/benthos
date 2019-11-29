@@ -21,10 +21,10 @@
 package output
 
 import (
-	"github.com/Jeffail/benthos/lib/log"
-	"github.com/Jeffail/benthos/lib/metrics"
-	"github.com/Jeffail/benthos/lib/output/writer"
-	"github.com/Jeffail/benthos/lib/types"
+	"github.com/Jeffail/benthos/v3/lib/log"
+	"github.com/Jeffail/benthos/v3/lib/metrics"
+	"github.com/Jeffail/benthos/v3/lib/output/writer"
+	"github.com/Jeffail/benthos/v3/lib/types"
 )
 
 //------------------------------------------------------------------------------
@@ -33,7 +33,15 @@ func init() {
 	Constructors[TypeSQS] = TypeSpec{
 		constructor: NewAmazonSQS,
 		description: `
-Sends messages to an SQS queue.
+Sends messages to an SQS queue. Metadata values are sent along with the payload
+as attributes with the data type String. If the number of metadata values in a
+message exceeds the message attribute limit (10) then the top ten keys ordered
+alphabetically will be selected.
+
+The fields ` + "`message_group_id` and `message_deduplication_id`" + ` can be
+set dynamically using
+[function interpolations](../config_interpolation.md#functions), which are
+resolved individually for each message of a batch.
 
 ### Credentials
 

@@ -24,48 +24,60 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/Jeffail/benthos/lib/log"
-	"github.com/Jeffail/benthos/lib/message"
-	"github.com/Jeffail/benthos/lib/metrics"
+	"github.com/Jeffail/benthos/v3/lib/log"
+	"github.com/Jeffail/benthos/v3/lib/message"
+	"github.com/Jeffail/benthos/v3/lib/metrics"
 )
 
 func TestMetadataSet(t *testing.T) {
 	type mTest struct {
-		name   string
-		key    string
-		value  string
-		input  string
-		output string
+		name     string
+		inputKey string
+		key      string
+		value    string
+		input    string
+		output   string
 	}
 
 	tests := []mTest{
 		{
-			name:   "set 1",
-			key:    "foo.bar",
-			value:  `foo bar`,
-			input:  `{"foo":{"bar":5}}`,
-			output: `foo bar`,
+			name:     "set 1",
+			inputKey: "foo.bar",
+			key:      "foo.bar",
+			value:    `foo bar`,
+			input:    `{"foo":{"bar":5}}`,
+			output:   `foo bar`,
 		},
 		{
-			name:   "set 2",
-			key:    "foo.bar",
-			value:  `${!json_field:foo.bar}`,
-			input:  `{"foo":{"bar":"hello world"}}`,
-			output: `hello world`,
+			name:     "set 2",
+			inputKey: "foo.bar",
+			key:      "foo.bar",
+			value:    `${!json_field:foo.bar}`,
+			input:    `{"foo":{"bar":"hello world"}}`,
+			output:   `hello world`,
 		},
 		{
-			name:   "set 3",
-			key:    "foo.bar",
-			value:  `hello ${!json_field:foo.bar} world`,
-			input:  `{"foo":{"bar":100}}`,
-			output: `hello 100 world`,
+			name:     "set 3",
+			inputKey: "foo.bar",
+			key:      "foo.bar",
+			value:    `hello ${!json_field:foo.bar} world`,
+			input:    `{"foo":{"bar":100}}`,
+			output:   `hello 100 world`,
+		},
+		{
+			name:     "set 4",
+			inputKey: "key-${!json_field:key}",
+			key:      "key-custom-key",
+			value:    `hello world`,
+			input:    `{"key":"custom-key"}`,
+			output:   `hello world`,
 		},
 	}
 
 	for _, test := range tests {
 		conf := NewConfig()
 		conf.Metadata.Operator = "set"
-		conf.Metadata.Key = test.key
+		conf.Metadata.Key = test.inputKey
 		conf.Metadata.Value = test.value
 
 		mSet, err := NewMetadata(conf, nil, log.Noop(), metrics.Noop())
@@ -179,6 +191,51 @@ func TestMetadataDeletePrefix(t *testing.T) {
 		"delfoo": "bar3",
 		"bar":    "bar5",
 		"delbar": "bar6",
+	}
+
+	if err = msgs[0].Get(0).Metadata().Iter(func(k, v string) error {
+		if _, exists := expMap[k]; !exists {
+			return fmt.Errorf("unexpected key: %v", k)
+		}
+		if exp, act := expMap[k], v; exp != act {
+			return fmt.Errorf("wrong value: %v != %v", act, exp)
+		}
+		delete(expMap, k)
+		return nil
+	}); err != nil {
+		t.Error(err)
+	}
+
+	if len(expMap) > 0 {
+		t.Errorf("Lost metadata: %v", expMap)
+	}
+}
+
+func TestMetadataDelete(t *testing.T) {
+	conf := NewConfig()
+	conf.Metadata.Operator = "delete"
+	conf.Metadata.Value = "delete_me"
+
+	mDel, err := NewMetadata(conf, nil, log.Noop(), metrics.Noop())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	inMsg := message.New([][]byte{[]byte("")})
+	inMsg.Get(0).Metadata().Set("foo", "bar")
+	inMsg.Get(0).Metadata().Set("delete_me_not", "bar2")
+	inMsg.Get(0).Metadata().Set("delete_me", "bar3")
+	inMsg.Get(0).Metadata().Set("delbar", "bar4")
+
+	msgs, _ := mDel.ProcessMessage(inMsg)
+	if len(msgs) != 1 {
+		t.Fatalf("Wrong count of messages: %v", len(msgs))
+	}
+
+	expMap := map[string]string{
+		"foo":           "bar",
+		"delete_me_not": "bar2",
+		"delbar":        "bar4",
 	}
 
 	if err = msgs[0].Get(0).Metadata().Iter(func(k, v string) error {

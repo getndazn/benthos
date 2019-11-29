@@ -27,13 +27,13 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/Jeffail/benthos/lib/input/reader"
-	"github.com/Jeffail/benthos/lib/log"
-	"github.com/Jeffail/benthos/lib/metrics"
-	"github.com/Jeffail/benthos/lib/pipeline"
-	"github.com/Jeffail/benthos/lib/processor"
-	"github.com/Jeffail/benthos/lib/types"
-	"github.com/Jeffail/benthos/lib/util/config"
+	"github.com/Jeffail/benthos/v3/lib/input/reader"
+	"github.com/Jeffail/benthos/v3/lib/log"
+	"github.com/Jeffail/benthos/v3/lib/metrics"
+	"github.com/Jeffail/benthos/v3/lib/pipeline"
+	"github.com/Jeffail/benthos/v3/lib/processor"
+	"github.com/Jeffail/benthos/v3/lib/types"
+	"github.com/Jeffail/benthos/v3/lib/util/config"
 	yaml "gopkg.in/yaml.v3"
 )
 
@@ -52,6 +52,24 @@ type TypeSpec struct {
 	constructor        func(conf Config, mgr types.Manager, log log.Modular, stats metrics.Type) (Type, error)
 	description        string
 	sanitiseConfigFunc func(conf Config) (interface{}, error)
+
+	// DEPRECATED: This is a hack for until the batch processor is removed.
+	// TODO: V4 Remove this.
+	brokerConstructorHasBatchProcessor func(
+		hasBatchProc bool,
+		conf Config,
+		mgr types.Manager,
+		log log.Modular,
+		stats metrics.Type,
+		pipelineConstructors ...types.PipelineConstructorFunc,
+	) (Type, error)
+	constructorHasBatchProcessor func(
+		hasBatchProc bool,
+		conf Config,
+		mgr types.Manager,
+		log log.Modular,
+		stats metrics.Type,
+	) (Type, error)
 }
 
 // Constructors is a map of all input types with their specs.
@@ -62,6 +80,7 @@ var Constructors = map[string]TypeSpec{}
 // String constants representing each input type.
 const (
 	TypeAMQP            = "amqp"
+	TypeAMQP09          = "amqp_0_9"
 	TypeBroker          = "broker"
 	TypeDynamic         = "dynamic"
 	TypeFile            = "file"
@@ -87,6 +106,9 @@ const (
 	TypeS3              = "s3"
 	TypeSQS             = "sqs"
 	TypeSTDIN           = "stdin"
+	TypeTCP             = "tcp"
+	TypeTCPServer       = "tcp_server"
+	TypeUDPServer       = "udp_server"
 	TypeWebsocket       = "websocket"
 	TypeZMQ4            = "zmq4"
 )
@@ -97,6 +119,7 @@ const (
 type Config struct {
 	Type            string                       `json:"type" yaml:"type"`
 	AMQP            reader.AMQPConfig            `json:"amqp" yaml:"amqp"`
+	AMQP09          reader.AMQP09Config          `json:"amqp_0_9" yaml:"amqp_0_9"`
 	Broker          BrokerConfig                 `json:"broker" yaml:"broker"`
 	Dynamic         DynamicConfig                `json:"dynamic" yaml:"dynamic"`
 	File            FileConfig                   `json:"file" yaml:"file"`
@@ -123,6 +146,9 @@ type Config struct {
 	S3              reader.AmazonS3Config        `json:"s3" yaml:"s3"`
 	SQS             reader.AmazonSQSConfig       `json:"sqs" yaml:"sqs"`
 	STDIN           STDINConfig                  `json:"stdin" yaml:"stdin"`
+	TCP             TCPConfig                    `json:"tcp" yaml:"tcp"`
+	TCPServer       TCPServerConfig              `json:"tcp_server" yaml:"tcp_server"`
+	UDPServer       UDPServerConfig              `json:"udp_server" yaml:"udp_server"`
 	Websocket       reader.WebsocketConfig       `json:"websocket" yaml:"websocket"`
 	ZMQ4            *reader.ZMQ4Config           `json:"zmq4,omitempty" yaml:"zmq4,omitempty"`
 	Processors      []processor.Config           `json:"processors" yaml:"processors"`
@@ -133,6 +159,7 @@ func NewConfig() Config {
 	return Config{
 		Type:            "stdin",
 		AMQP:            reader.NewAMQPConfig(),
+		AMQP09:          reader.NewAMQP09Config(),
 		Broker:          NewBrokerConfig(),
 		Dynamic:         NewDynamicConfig(),
 		File:            NewFileConfig(),
@@ -159,6 +186,9 @@ func NewConfig() Config {
 		S3:              reader.NewAmazonS3Config(),
 		SQS:             reader.NewAmazonSQSConfig(),
 		STDIN:           NewSTDINConfig(),
+		TCP:             NewTCPConfig(),
+		TCPServer:       NewTCPServerConfig(),
+		UDPServer:       NewUDPServerConfig(),
 		Websocket:       reader.NewWebsocketConfig(),
 		ZMQ4:            reader.NewZMQ4Config(),
 		Processors:      []processor.Config{},
@@ -349,7 +379,27 @@ func New(
 	stats metrics.Type,
 	pipelines ...types.PipelineConstructorFunc,
 ) (Type, error) {
+	return newHasBatchProcessor(false, conf, mgr, log, stats, pipelines...)
+}
+
+// DEPRECATED: This is a hack for until the batch processor is removed.
+// TODO: V4 Remove this.
+func newHasBatchProcessor(
+	hasBatchProc bool,
+	conf Config,
+	mgr types.Manager,
+	log log.Modular,
+	stats metrics.Type,
+	pipelines ...types.PipelineConstructorFunc,
+) (Type, error) {
 	if len(conf.Processors) > 0 {
+		// TODO: V4 Remove this.
+		for _, procConf := range conf.Processors {
+			if procConf.Type == processor.TypeBatch {
+				hasBatchProc = true
+			}
+		}
+
 		pipelines = append([]types.PipelineConstructorFunc{func(i *int) (types.Pipeline, error) {
 			if i == nil {
 				procs := 0
@@ -369,10 +419,21 @@ func New(
 		}}, pipelines...)
 	}
 	if c, ok := Constructors[conf.Type]; ok {
+		// TODO: V4 Remove this.
+		if c.brokerConstructorHasBatchProcessor != nil {
+			return c.brokerConstructorHasBatchProcessor(hasBatchProc, conf, mgr, log, stats, pipelines...)
+		}
 		if c.brokerConstructor != nil {
 			return c.brokerConstructor(conf, mgr, log, stats, pipelines...)
 		}
-		input, err := c.constructor(conf, mgr, log, stats)
+		var input Type
+		var err error
+		// TODO: V4 Remove this.
+		if c.constructorHasBatchProcessor != nil {
+			input, err = c.constructorHasBatchProcessor(hasBatchProc, conf, mgr, log, stats)
+		} else {
+			input, err = c.constructor(conf, mgr, log, stats)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("failed to create input '%v': %v", conf.Type, err)
 		}

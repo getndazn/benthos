@@ -24,11 +24,11 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/Jeffail/benthos/lib/log"
-	"github.com/Jeffail/benthos/lib/message"
-	"github.com/Jeffail/benthos/lib/metrics"
-	"github.com/Jeffail/benthos/lib/types"
-	"github.com/Jeffail/benthos/lib/util/text"
+	"github.com/Jeffail/benthos/v3/lib/log"
+	"github.com/Jeffail/benthos/v3/lib/message"
+	"github.com/Jeffail/benthos/v3/lib/metrics"
+	"github.com/Jeffail/benthos/v3/lib/types"
+	"github.com/Jeffail/benthos/v3/lib/util/text"
 	"github.com/opentracing/opentracing-go"
 )
 
@@ -92,7 +92,7 @@ condition:
 #### Hydration
 
 It's possible to enrich payloads with content previously stored in a cache by
-using the [` + "`process_dag`" + `](#process_dag) processor:
+using the [` + "`process_map`" + `](#process_map) processor:
 
 ` + "``` yaml" + `
 - process_map:

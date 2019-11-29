@@ -82,30 +82,36 @@ In this case the [`for_each`](#for_each) processor can be used.
 23. [`insert_part`](#insert_part)
 24. [`jmespath`](#jmespath)
 25. [`json`](#json)
-26. [`lambda`](#lambda)
-27. [`log`](#log)
-28. [`merge_json`](#merge_json)
-29. [`metadata`](#metadata)
-30. [`metric`](#metric)
-31. [`noop`](#noop)
-32. [`number`](#number)
-33. [`parallel`](#parallel)
-34. [`process_batch`](#process_batch)
-35. [`process_dag`](#process_dag)
-36. [`process_field`](#process_field)
-37. [`process_map`](#process_map)
-38. [`sample`](#sample)
-39. [`select_parts`](#select_parts)
-40. [`sleep`](#sleep)
-41. [`split`](#split)
-42. [`sql`](#sql)
-43. [`subprocess`](#subprocess)
-44. [`switch`](#switch)
-45. [`text`](#text)
-46. [`throttle`](#throttle)
-47. [`try`](#try)
-48. [`unarchive`](#unarchive)
-49. [`while`](#while)
+26. [`json_schema`](#json_schema)
+27. [`lambda`](#lambda)
+28. [`log`](#log)
+29. [`merge_json`](#merge_json)
+30. [`metadata`](#metadata)
+31. [`metric`](#metric)
+32. [`noop`](#noop)
+33. [`number`](#number)
+34. [`parallel`](#parallel)
+35. [`process_batch`](#process_batch)
+36. [`process_dag`](#process_dag)
+37. [`process_field`](#process_field)
+38. [`process_map`](#process_map)
+39. [`rate_limit`](#rate_limit)
+40. [`redis`](#redis)
+41. [`resource`](#resource)
+42. [`sample`](#sample)
+43. [`select_parts`](#select_parts)
+44. [`sleep`](#sleep)
+45. [`split`](#split)
+46. [`sql`](#sql)
+47. [`subprocess`](#subprocess)
+48. [`switch`](#switch)
+49. [`text`](#text)
+50. [`throttle`](#throttle)
+51. [`try`](#try)
+52. [`unarchive`](#unarchive)
+53. [`while`](#while)
+54. [`workflow`](#workflow)
+55. [`xml`](#xml)
 
 ## `archive`
 
@@ -241,43 +247,11 @@ batch:
   period: ""
 ```
 
-Reads a number of discrete messages, buffering (but not acknowledging) the
-message parts until either:
+DEPRECATED: This processor is no longer supported and has been replaced with
+improved batching mechanisms. For more information about batching in Benthos
+please check out [this document](../batching.md).
 
-- The `byte_size` field is non-zero and the total size of the batch in
-  bytes matches or exceeds it.
-- The `count` field is non-zero and the total number of messages in
-  the batch matches or exceeds it.
-- A message added to the batch causes the condition to resolve `true`.
-- The `period` field is non-empty and the time since the last batch
-  exceeds its value.
-
-Once one of these events trigger the parts are combined into a single batch of
-messages and sent through the pipeline. After reaching a destination the
-acknowledgment is sent out for all messages inside the batch at the same time,
-preserving at-least-once delivery guarantees.
-
-The `period` field - when non-empty - defines a period of time whereby
-a batch is sent even if the `byte_size` has not yet been reached.
-Batch parameters are only triggered when a message is added, meaning a pending
-batch can last beyond this period if no messages are added since the period was
-reached.
-
-When a batch is sent to an output the behaviour will differ depending on the
-protocol. If the output type supports multipart messages then the batch is sent
-as a single message with multiple parts. If the output only supports single part
-messages then the parts will be sent as a batch of single part messages. If the
-output supports neither multipart or batches of messages then Benthos falls back
-to sending them individually.
-
-### WARNING
-
-The batch processor should *always* be positioned within the `input`
-section - ideally before any other processor - in order to avoid unexpected
-acknowledgment behaviour and message ordering.
-
-For more information about batching in Benthos please check out
-[this document](../batching.md).
+This processor is scheduled to be removed in Benthos V4
 
 ## `bounds_check`
 
@@ -359,7 +333,7 @@ condition:
 #### Hydration
 
 It's possible to enrich payloads with content previously stored in a cache by
-using the [`process_dag`](#process_dag) processor:
+using the [`process_map`](#process_map) processor:
 
 ``` yaml
 - process_map:
@@ -601,6 +575,7 @@ grok:
   named_captures_only: true
   output_format: json
   parts: []
+  pattern_definitions: {}
   patterns: []
   remove_empty_values: true
   use_default_patterns: true
@@ -611,9 +586,17 @@ pattern returns at least one value a resulting structured object is created
 according to the chosen output format and will replace the payload. Currently
 only json is a valid output format.
 
-This processor respects type hints in the grok patterns, therefore with the
-pattern `%{WORD:first},%{INT:second:int}` and a payload of `foo,1`
+Type hints within patterns are respected, therefore with the pattern
+`%{WORD:first},%{INT:second:int}` and a payload of `foo,1`
 the resulting payload would be `{"first":"foo","second":1}`.
+
+### Performance
+
+This processor currently uses the [Go RE2](https://golang.org/s/re2syntax)
+regular expression engine, which is guaranteed to run in time linear to the size
+of the input. However, this property often makes it less performant than pcre
+based implementations of grok. For more information see
+[https://swtch.com/~rsc/regexp/regexp1.html](https://swtch.com/~rsc/regexp/regexp1.html).
 
 ## `group_by`
 
@@ -925,7 +908,9 @@ json:
 Parses messages as a JSON document, performs a mutation on the data, and then
 overwrites the previous contents with the new value.
 
-If the path is empty or "." the root of the data will be targeted.
+The field `path` is a [dot separated path](../field_paths.md) which,
+for most operators, determines the field within the payload to be targeted. If
+the path is empty or "." the root of the data will be targeted.
 
 This processor will interpolate functions within the 'value' field, you can find
 a list of functions [here](../config_interpolation.md#functions).
@@ -999,6 +984,80 @@ json:
 
 The value will be converted into '{"foo":{"bar":5}}'. If the YAML object
 contains keys that aren't strings those fields will be ignored.
+
+#### `split`
+
+Splits a string field by a value and replaces the original string with an array
+containing the results of the split. This operator requires both the path value
+and the contents of the `value` field to be strings.
+
+## `json_schema`
+
+``` yaml
+type: json_schema
+json_schema:
+  parts: []
+  schema: ""
+  schema_path: ""
+```
+
+Checks messages against a provided JSONSchema definition but does not change the
+payload under any circumstances. If a message does not match the schema it can
+be caught using error handling methods outlined [here](../error_handling.md).
+
+Please refer to the [JSON Schema website](https://json-schema.org/) for
+information and tutorials regarding the syntax of the schema.
+
+For example, with the following JSONSchema document:
+
+```json
+{
+	"$id": "https://example.com/person.schema.json",
+	"$schema": "http://json-schema.org/draft-07/schema#",
+	"title": "Person",
+	"type": "object",
+	"properties": {
+	  "firstName": {
+		"type": "string",
+		"description": "The person's first name."
+	  },
+	  "lastName": {
+		"type": "string",
+		"description": "The person's last name."
+	  },
+	  "age": {
+		"description": "Age in years which must be equal to or greater than zero.",
+		"type": "integer",
+		"minimum": 0
+	  }
+	}
+}
+```
+
+And the following Benthos configuration:
+
+```yaml
+pipeline:
+  processors:
+  - json_schema:
+      schema_path: "file://path_to_schema.json"
+  - catch:
+    - log:
+        level: ERROR
+        message: "Schema validation failed due to: ${!error}"
+```
+
+If a payload being processed looked like:
+
+```json
+{"firstName":"John","lastName":"Doe","age":-21}
+```
+
+Then the payload would be unchanged but a log message would appear explaining
+the fault. This gives you flexibility in how you may handle schema errors, but
+for a simpler use case you might instead wish to use the
+[`json_schema`](../conditions/README.md#json_schema) condition with a
+[`filter`](#filter).
 
 ## `lambda`
 
@@ -1130,10 +1189,10 @@ referred to using configuration
 [interpolation functions](../config_interpolation.md#metadata),
 which allow you to set fields in certain outputs using these dynamic values.
 
-This processor will interpolate functions within the `value` field,
-you can find a list of functions [here](../config_interpolation.md#functions).
-This allows you to set the contents of a metadata field using values taken from
-the message payload.
+This processor will interpolate functions within both the
+`key` and `value` fields, you can find a list of functions
+[here](../config_interpolation.md#functions). This allows you to set the
+contents of a metadata field using values taken from the message payload.
 
 Value interpolations are resolved once per batch. In order to resolve them per
 message of a batch place it within a [`for_each`](#for_each)
@@ -1153,6 +1212,11 @@ for_each:
 
 Sets the value of a metadata key.
 
+#### `delete`
+
+Removes all metadata values from the message where the key matches the value
+provided. If the value field is left empty the key value will instead be used.
+
 #### `delete_all`
 
 Removes all metadata values from the message.
@@ -1160,7 +1224,8 @@ Removes all metadata values from the message.
 #### `delete_prefix`
 
 Removes all metadata values from the message where the key is prefixed with the
-value provided.
+value provided. If the value field is left empty the key value will instead be
+used as the prefix.
 
 ## `metric`
 
@@ -1340,6 +1405,9 @@ calculates a Directed Acyclic Graph (DAG) of their dependencies by referring to
 their postmap targets for provided fields and their premap targets for required
 fields.
 
+The names of workflow stages may only contain alphanumeric, underscore and dash
+characters (they must match the regular expression `[a-zA-Z0-9_-]+`).
+
 The DAG is then used to execute the children in the necessary order with the
 maximum parallelism possible. You can read more about workflows in Benthos
 [in this document](../workflows.md).
@@ -1403,9 +1471,10 @@ process_field:
   result_type: string
 ```
 
-A processor that extracts the value of a field within payloads according to a
-specified codec, applies a list of processors to the extracted value and finally
-sets the field within the original payloads to the processed result.
+A processor that extracts the value of a field [dot path](../field_paths.md)
+within payloads according to a specified codec, applies a list of processors to
+the extracted value and finally sets the field within the original payloads to
+the processed result.
 
 ### Codecs
 
@@ -1470,9 +1539,10 @@ process_map:
   processors: []
 ```
 
-A processor that extracts and maps fields from the original payload into new
-objects, applies a list of processors to the newly constructed objects, and
-finally maps the result back into the original payload.
+A processor that extracts and maps fields identified via
+[dot path](../field_paths.md) from the original payload into new objects,
+applies a list of processors to the newly constructed objects, and finally maps
+the result back into the original payload.
 
 This processor is useful for performing processors on subsections of a payload.
 For example, you could extract sections of a JSON object in order to construct
@@ -1534,6 +1604,104 @@ This processor supports batch messages. When message parts are post-mapped after
 processing they will be correctly aligned with the original batch. However, the
 ordering of premapped message parts as they are sent through processors are not
 guaranteed to match the ordering of the original batch.
+
+## `rate_limit`
+
+``` yaml
+type: rate_limit
+rate_limit:
+  resource: ""
+```
+
+Throttles the throughput of a pipeline according to a specified
+[`rate_limit`](../rate_limits/README.md) resource. Rate limits are
+shared across components and therefore apply globally to all processing
+pipelines.
+
+## `redis`
+
+``` yaml
+type: redis
+redis:
+  key: ""
+  operator: scard
+  parts: []
+  retries: 3
+  retry_period: 500ms
+  url: tcp://localhost:6379
+```
+
+Performs actions against Redis that aren't possible using a
+[`cache`](#cache) processor. Actions are performed for each message of
+a batch, where the contents are replaced with the result.
+
+The field `key` supports
+[interpolation functions](../config_interpolation.md#functions) resolved
+individually for each message of the batch.
+
+For example, given payloads with a metadata field `set_key`, you could
+add a JSON field to your payload with the cardinality of their target sets with:
+
+```yaml
+- process_field:
+    path: meta.cardinality
+    result_type: int
+    processors:
+      - redis:
+          url: TODO
+          operator: scard
+          key: ${!metadata:set_key}
+ ```
+
+
+### Operators
+
+#### `scard`
+
+Returns the cardinality of a set, or 0 if the key does not exist.
+
+#### `sadd`
+
+Adds a new member to a set. Returns `1` if the member was added.
+
+## `resource`
+
+``` yaml
+type: resource
+resource: ""
+```
+
+Resource is a processor type that runs a processor resource by its name. This
+processor allows you to run the same configured processor resource in multiple
+places.
+
+Resource processors also have the advantage of name based metrics and logging.
+For example, the config:
+
+``` yaml
+pipeline:
+  processors:
+    - jmespath:
+        query: foo
+```
+
+Is equivalent to:
+
+``` yaml
+pipeline:
+  processors:
+    - resource: foo_proc
+
+resources:
+  processors:
+    foo_proc:
+      jmespath:
+        query: foo
+```
+
+But now the metrics path of the JMESPath processor will be
+`resources.processors.foo_proc`, this way of flattening observability
+labels becomes more useful as configs get larger and more nested.
 
 ## `sample`
 
@@ -1795,6 +1963,39 @@ Prepends text to the beginning of the payload.
 Returns a doubled-quoted string, using escape sequences (\t, \n, \xFF, \u0100)
 for control characters and other non-printable characters.
 
+#### `regexp_expand`
+
+Expands each matched occurrence of the argument regular expression according to
+a template specified with the `value` field, and replaces the message
+with the aggregated results.
+
+Inside the template $ signs are interpreted as submatch expansions, e.g. $1
+represents the text of the first submatch.
+
+For example, given the following config:
+
+```yaml
+  - text:
+      operator: regexp_expand
+      arg: "(?m)(?P<key>\\w+):\\s+(?P<value>\\w+)$"
+      value: "$key=$value\n"
+```
+
+And a message containing:
+
+```text
+option1: value1
+# comment line
+option2: value2
+```
+
+The resulting payload would be:
+
+```text
+option1=value1
+option2=value2
+```
+
 #### `replace`
 
 Replaces all occurrences of the argument in a message with a value.
@@ -1924,7 +2125,7 @@ while:
 ```
 
 While is a processor that has a condition and a list of child processors. The
-child processors are executed continously on a message batch for as long as the
+child processors are executed continuously on a message batch for as long as the
 child condition resolves to true.
 
 The field `at_least_once`, if true, ensures that the child processors
@@ -1939,6 +2140,102 @@ execution there are more than 1 message batches the condition is checked against
 the first batch only.
 
 You can find a [full list of conditions here](../conditions).
+
+## `workflow`
+
+``` yaml
+type: workflow
+workflow:
+  meta_path: meta.workflow
+  stages: {}
+```
+
+Performs the same workflow stages as the [`process_dag`](#process_dag)
+processor, but uses a record of workflow statuses stored in the path specified
+by the field `meta_path` in order to report which workflow stages
+succeeded, were skipped, or failed for a document. The record takes this form:
+
+```json
+{
+	"succeeded": [ "foo" ],
+	"skipped": [ "bar" ],
+	"failed": [ "baz" ]
+}
+```
+
+If a document is consumed that already contains these records then they will be
+used in order to only perform stages that haven't already succeeded or have been
+skipped. For example, if a document received contained the above snippet then
+the foo and bar stages would not be attempted. Before writing the new records to
+the resulting payloads the old one will be moved into
+`<meta_path>.previous`.
+
+If a field `<meta_path>.apply` exists in the record for a document and
+is an array then it will be used as a whitelist of stages to apply, all other
+stages will be skipped.
+
+You can read more about workflows in Benthos
+[in this document](../workflows.md).
+
+## `xml`
+
+``` yaml
+type: xml
+xml:
+  operator: to_json
+  parts: []
+```
+
+EXPERIMENTAL: This processor is considered experimental and is therefore subject
+to change outside of major version releases.
+
+Parses messages as an XML document, performs a mutation on the data, and then
+overwrites the previous contents with the new value.
+
+### Operators
+
+#### `to_json`
+
+Converts an XML document into a JSON structure, where elements appear as keys of
+an object according to the following rules:
+
+- If an element contains attributes they are parsed by prefixing a hyphen,
+  `-`, to the attribute label.
+- If the element is a simple element and has attributes, the element value
+  is given the key `#text`.
+- XML comments, directives, and process instructions are ignored.
+- When elements are repeated the resulting JSON value is an array.
+
+For example, given the following XML:
+
+```xml
+<root>
+  <title>This is a title</title>
+  <description tone="boring">This is a description</description>
+  <elements id="1">foo1</elements>
+  <elements id="2">foo2</elements>
+  <elements>foo3</elements>
+</root>
+```
+
+The resulting JSON structure would look like this:
+
+```json
+{
+  "root":{
+    "title":"This is a title",
+    "description":{
+      "#text":"This is a description",
+      "-tone":"boring"
+    },
+    "elements":[
+      {"#text":"foo1","-id":"1"},
+      {"#text":"foo2","-id":"2"},
+      "foo3"
+    ]
+  }
+}
+```
 
 [0]: ../examples/README.md
 [1]: ../pipeline.md

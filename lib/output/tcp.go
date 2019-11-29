@@ -1,4 +1,4 @@
-// Copyright (c) 2014 Ashley Jeffs
+// Copyright (c) 2019 Ashley Jeffs
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -18,10 +18,36 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-package buffer
+package output
 
-import "github.com/Jeffail/benthos/lib/log"
+import (
+	"github.com/Jeffail/benthos/v3/lib/log"
+	"github.com/Jeffail/benthos/v3/lib/metrics"
+	"github.com/Jeffail/benthos/v3/lib/output/writer"
+	"github.com/Jeffail/benthos/v3/lib/types"
+)
 
-var logConfig = log.Config{
-	LogLevel: "NONE",
+//------------------------------------------------------------------------------
+
+func init() {
+	Constructors[TypeTCP] = TypeSpec{
+		constructor: NewTCP,
+		description: `
+Sends messages as a continuous stream of line delimited data over TCP by
+connecting to a server.
+
+If batched messages are sent the final message of the batch will be followed by
+two line breaks in order to indicate the end of the batch.`,
+	}
 }
+
+// NewTCP creates a new TCP output type.
+func NewTCP(conf Config, mgr types.Manager, log log.Modular, stats metrics.Type) (Type, error) {
+	t, err := writer.NewTCP(conf.TCP, mgr, log, stats)
+	if err != nil {
+		return nil, err
+	}
+	return NewWriter(TypeTCP, t, log, stats)
+}
+
+//------------------------------------------------------------------------------

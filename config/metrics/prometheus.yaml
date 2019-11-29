@@ -23,6 +23,7 @@ output:
 resources:
   caches: {}
   conditions: {}
+  processors: {}
   rate_limits: {}
 logger:
   prefix: benthos
@@ -33,8 +34,8 @@ logger:
     '@service': benthos
 metrics:
   type: prometheus
-  prefix: benthos
   prometheus:
+    prefix: benthos
     push_interval: ""
     push_job_name: benthos_push
     push_url: ""

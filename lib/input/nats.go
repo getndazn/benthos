@@ -21,10 +21,10 @@
 package input
 
 import (
-	"github.com/Jeffail/benthos/lib/input/reader"
-	"github.com/Jeffail/benthos/lib/log"
-	"github.com/Jeffail/benthos/lib/metrics"
-	"github.com/Jeffail/benthos/lib/types"
+	"github.com/Jeffail/benthos/v3/lib/input/reader"
+	"github.com/Jeffail/benthos/v3/lib/log"
+	"github.com/Jeffail/benthos/v3/lib/metrics"
+	"github.com/Jeffail/benthos/v3/lib/types"
 )
 
 //------------------------------------------------------------------------------
@@ -35,6 +35,10 @@ func init() {
 		description: `
 Subscribe to a NATS subject. NATS is at-most-once, if you need at-least-once
 behaviour then look at NATS Stream.
+
+Messages consumed by this input can be processed in parallel, meaning a single
+instance of this input can utilise any number of threads within a
+` + "`pipeline`" + ` section of a config.
 
 The urls can contain username/password semantics. e.g.
 nats://derek:pass@localhost:4222
@@ -60,7 +64,7 @@ func NewNATS(conf Config, mgr types.Manager, log log.Modular, stats metrics.Type
 	if err != nil {
 		return nil, err
 	}
-	return NewReader("nats", reader.NewPreserver(n), log, stats)
+	return NewAsyncReader(TypeNATS, true, reader.NewAsyncPreserver(n), log, stats)
 }
 
 //------------------------------------------------------------------------------

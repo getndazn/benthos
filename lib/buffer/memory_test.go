@@ -21,25 +21,23 @@
 package buffer
 
 import (
-	"os"
 	"testing"
 	"time"
 
-	"github.com/Jeffail/benthos/lib/log"
-	"github.com/Jeffail/benthos/lib/message"
-	"github.com/Jeffail/benthos/lib/metrics"
-	"github.com/Jeffail/benthos/lib/response"
-	"github.com/Jeffail/benthos/lib/types"
+	"github.com/Jeffail/benthos/v3/lib/log"
+	"github.com/Jeffail/benthos/v3/lib/message"
+	"github.com/Jeffail/benthos/v3/lib/metrics"
+	"github.com/Jeffail/benthos/v3/lib/response"
+	"github.com/Jeffail/benthos/v3/lib/types"
 )
 
 func TestMemoryBuffer(t *testing.T) {
 	conf := NewConfig()
 	conf.Type = "memory"
 
-	buf, err := New(conf, log.New(os.Stdout, logConfig), metrics.DudType{})
+	buf, err := New(conf, nil, log.Noop(), metrics.Noop())
 	if err != nil {
-		t.Error(err)
-		return
+		t.Fatal(err)
 	}
 
 	tChan, resChan := make(chan types.Transaction), make(chan types.Response)

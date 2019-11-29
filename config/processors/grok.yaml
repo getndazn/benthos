@@ -20,6 +20,7 @@ pipeline:
       named_captures_only: true
       output_format: json
       parts: []
+      pattern_definitions: {}
       patterns: []
       remove_empty_values: true
       use_default_patterns: true
@@ -31,6 +32,7 @@ output:
 resources:
   caches: {}
   conditions: {}
+  processors: {}
   rate_limits: {}
 logger:
   prefix: benthos
@@ -41,8 +43,8 @@ logger:
     '@service': benthos
 metrics:
   type: http_server
-  http_server: {}
-  prefix: benthos
+  http_server:
+    prefix: benthos
 tracer:
   type: none
   none: {}

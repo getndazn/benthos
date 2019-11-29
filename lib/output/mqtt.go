@@ -21,10 +21,10 @@
 package output
 
 import (
-	"github.com/Jeffail/benthos/lib/log"
-	"github.com/Jeffail/benthos/lib/metrics"
-	"github.com/Jeffail/benthos/lib/output/writer"
-	"github.com/Jeffail/benthos/lib/types"
+	"github.com/Jeffail/benthos/v3/lib/log"
+	"github.com/Jeffail/benthos/v3/lib/metrics"
+	"github.com/Jeffail/benthos/v3/lib/output/writer"
+	"github.com/Jeffail/benthos/v3/lib/types"
 )
 
 //------------------------------------------------------------------------------
@@ -33,7 +33,11 @@ func init() {
 	Constructors[TypeMQTT] = TypeSpec{
 		constructor: NewMQTT,
 		description: `
-Pushes messages to an MQTT broker.`,
+Pushes messages to an MQTT broker.
+
+The ` + "`topic`" + ` field can be dynamically set using function interpolations
+described [here](../config_interpolation.md#functions). When sending batched
+messages these interpolations are performed per message part.`,
 	}
 }
 

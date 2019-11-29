@@ -21,18 +21,19 @@
 package integration
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/Jeffail/benthos/lib/input/reader"
-	"github.com/Jeffail/benthos/lib/log"
-	"github.com/Jeffail/benthos/lib/message"
-	"github.com/Jeffail/benthos/lib/metrics"
-	"github.com/Jeffail/benthos/lib/output/writer"
-	"github.com/Jeffail/benthos/lib/types"
-	"github.com/nats-io/go-nats-streaming"
+	"github.com/Jeffail/benthos/v3/lib/input/reader"
+	"github.com/Jeffail/benthos/v3/lib/log"
+	"github.com/Jeffail/benthos/v3/lib/message"
+	"github.com/Jeffail/benthos/v3/lib/metrics"
+	"github.com/Jeffail/benthos/v3/lib/output/writer"
+	"github.com/Jeffail/benthos/v3/lib/types"
+	"github.com/nats-io/stan.go"
 	"github.com/ory/dockertest"
 )
 
@@ -53,6 +54,12 @@ func TestNATSStreamIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Could not start resource: %s", err)
 	}
+	defer func() {
+		if err = pool.Purge(resource); err != nil {
+			t.Logf("Failed to clean up docker resource: %v", err)
+		}
+	}()
+	resource.Expire(900)
 
 	url := fmt.Sprintf("tcp://localhost:%v", resource.GetPort("4222/tcp"))
 	if err = pool.Retry(func() error {
@@ -66,12 +73,12 @@ func TestNATSStreamIntegration(t *testing.T) {
 		t.Fatalf("Could not connect to docker resource: %s", err)
 	}
 
-	defer func() {
-		if err = pool.Purge(resource); err != nil {
-			t.Logf("Failed to clean up docker resource: %v", err)
-		}
-	}()
-
+	t.Run("TestNATSStreamStreamsALO", func(te *testing.T) {
+		testNATSStreamStreamsALO(url, te)
+	})
+	t.Run("TestNATSStreamStreamsALOAsync", func(te *testing.T) {
+		testNATSStreamStreamsALOAsync(url, te)
+	})
 	t.Run("TestNATSStreamSinglePart", func(te *testing.T) {
 		testNATSStreamSinglePart(url, te)
 	})
@@ -102,6 +109,84 @@ func createNATSStreamInputOutput(
 		return
 	}
 	return
+}
+
+func testNATSStreamStreamsALO(url string, t *testing.T) {
+	subject := "benthos_test_streams_alo"
+
+	inConf := reader.NewNATSStreamConfig()
+	inConf.ClientID = "benthos_test_streams_alo"
+	inConf.URLs = []string{url}
+	inConf.Subject = subject
+
+	outConf := writer.NewNATSStreamConfig()
+	outConf.URLs = []string{url}
+	outConf.Subject = subject
+
+	outputCtr := func() (mOutput writer.Type, err error) {
+		if mOutput, err = writer.NewNATSStream(outConf, log.Noop(), metrics.Noop()); err != nil {
+			return
+		}
+		err = mOutput.Connect()
+		return
+	}
+	inputCtr := func() (mInput reader.Type, err error) {
+		if mInput, err = reader.NewNATSStream(inConf, log.Noop(), metrics.Noop()); err != nil {
+			return
+		}
+		err = mInput.Connect()
+		return
+	}
+
+	checkALOSynchronous(outputCtr, inputCtr, t)
+
+	inConf.Subject = "benthos_test_streams_alo_with_dc"
+	outConf.Subject = "benthos_test_streams_alo_with_dc"
+
+	checkALOSynchronousAndDie(outputCtr, inputCtr, t)
+}
+
+func testNATSStreamStreamsALOAsync(url string, t *testing.T) {
+	subject := "benthos_test_streams_alo_async"
+
+	inConf := reader.NewNATSStreamConfig()
+	inConf.ClientID = "benthos_test_streams_alo_async"
+	inConf.URLs = []string{url}
+	inConf.Subject = subject
+
+	outConf := writer.NewNATSStreamConfig()
+	outConf.URLs = []string{url}
+	outConf.Subject = subject
+
+	outputCtr := func() (mOutput writer.Type, err error) {
+		if mOutput, err = writer.NewNATSStream(outConf, log.Noop(), metrics.Noop()); err != nil {
+			return
+		}
+		err = mOutput.Connect()
+		return
+	}
+	inputCtr := func() (mInput reader.Async, err error) {
+		ctx, done := context.WithTimeout(context.Background(), time.Second*10)
+		defer done()
+
+		if mInput, err = reader.NewNATSStream(inConf, log.Noop(), metrics.Noop()); err != nil {
+			return
+		}
+		err = mInput.ConnectWithContext(ctx)
+		return
+	}
+
+	checkALOSynchronousAsync(outputCtr, inputCtr, t)
+
+	inConf.Subject = "benthos_test_streams_alo_with_dc_async"
+	outConf.Subject = "benthos_test_streams_alo_with_dc_async"
+
+	checkALOSynchronousAndDieAsync(outputCtr, inputCtr, t)
+
+	inConf.Subject = "benthos_test_streams_parallel_async"
+	outConf.Subject = "benthos_test_streams_parallel_async"
+
+	checkALOParallelAsync(outputCtr, inputCtr, 100, t)
 }
 
 func testNATSStreamSinglePart(url string, t *testing.T) {

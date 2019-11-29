@@ -7,6 +7,13 @@ http:
 input:
   type: broker
   broker:
+    batching:
+      byte_size: 0
+      condition:
+        type: static
+        static: false
+      count: 1
+      period: ""
     copies: 1
     inputs: []
 buffer:
@@ -18,12 +25,20 @@ pipeline:
 output:
   type: broker
   broker:
+    batching:
+      byte_size: 0
+      condition:
+        type: static
+        static: false
+      count: 1
+      period: ""
     copies: 1
     outputs: []
     pattern: fan_out
 resources:
   caches: {}
   conditions: {}
+  processors: {}
   rate_limits: {}
 logger:
   prefix: benthos
@@ -34,8 +49,8 @@ logger:
     '@service': benthos
 metrics:
   type: http_server
-  http_server: {}
-  prefix: benthos
+  http_server:
+    prefix: benthos
 tracer:
   type: none
   none: {}

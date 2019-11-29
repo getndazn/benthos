@@ -26,13 +26,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Jeffail/benthos/lib/input/reader"
-	"github.com/Jeffail/benthos/lib/log"
-	"github.com/Jeffail/benthos/lib/message"
-	"github.com/Jeffail/benthos/lib/metrics"
-	"github.com/Jeffail/benthos/lib/output/writer"
-	"github.com/Jeffail/benthos/lib/types"
-	nats "github.com/nats-io/go-nats"
+	"github.com/Jeffail/benthos/v3/lib/input/reader"
+	"github.com/Jeffail/benthos/v3/lib/log"
+	"github.com/Jeffail/benthos/v3/lib/message"
+	"github.com/Jeffail/benthos/v3/lib/metrics"
+	"github.com/Jeffail/benthos/v3/lib/output/writer"
+	"github.com/Jeffail/benthos/v3/lib/types"
+	"github.com/nats-io/nats.go"
 	"github.com/ory/dockertest"
 )
 
@@ -53,6 +53,12 @@ func TestNATSIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Could not start resource: %s", err)
 	}
+	defer func() {
+		if err = pool.Purge(resource); err != nil {
+			t.Logf("Failed to clean up docker resource: %v", err)
+		}
+	}()
+	resource.Expire(900)
 
 	url := fmt.Sprintf("tcp://localhost:%v", resource.GetPort("4222/tcp"))
 
@@ -66,12 +72,6 @@ func TestNATSIntegration(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Could not connect to docker resource: %s", err)
 	}
-
-	defer func() {
-		if err = pool.Purge(resource); err != nil {
-			t.Logf("Failed to clean up docker resource: %v", err)
-		}
-	}()
 
 	t.Run("TestNATSSinglePart", func(te *testing.T) {
 		testNATSSinglePart(url, te)

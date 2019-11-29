@@ -23,6 +23,7 @@ output:
 resources:
   caches: {}
   conditions: {}
+  processors: {}
   rate_limits: {}
 logger:
   prefix: benthos
@@ -37,7 +38,6 @@ metrics:
     child: {}
     paths: []
     patterns: []
-  prefix: benthos
 tracer:
   type: none
   none: {}

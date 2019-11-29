@@ -26,11 +26,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Jeffail/benthos/lib/input/reader"
-	"github.com/Jeffail/benthos/lib/log"
-	"github.com/Jeffail/benthos/lib/message"
-	"github.com/Jeffail/benthos/lib/metrics"
-	"github.com/Jeffail/benthos/lib/output/writer"
+	"github.com/Jeffail/benthos/v3/lib/input/reader"
+	"github.com/Jeffail/benthos/v3/lib/log"
+	"github.com/Jeffail/benthos/v3/lib/message"
+	"github.com/Jeffail/benthos/v3/lib/metrics"
+	"github.com/Jeffail/benthos/v3/lib/output/writer"
 	"github.com/colinmarc/hdfs"
 	"github.com/ory/dockertest"
 	"github.com/ory/dockertest/docker"
@@ -66,6 +66,12 @@ func TestHDFSIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Could not start resource: %s", err)
 	}
+	defer func() {
+		if err = pool.Purge(resource); err != nil {
+			t.Logf("Failed to clean up docker resource: %v", err)
+		}
+	}()
+	resource.Expire(900)
 
 	hosts := []string{"localhost:9000"}
 	user := "root"
@@ -96,12 +102,6 @@ func TestHDFSIntegration(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Could not connect to docker resource: %s", err)
 	}
-
-	defer func() {
-		if err = pool.Purge(resource); err != nil {
-			t.Logf("Failed to clean up docker resource: %v", err)
-		}
-	}()
 
 	t.Run("TestHDFSReaderWriterBasic", func(th *testing.T) {
 		testHDFSReaderBasic(hosts, user, th)

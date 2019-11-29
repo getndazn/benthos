@@ -22,15 +22,20 @@ package writer
 
 import (
 	"fmt"
+	"regexp"
+	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
-	"github.com/Jeffail/benthos/lib/log"
-	"github.com/Jeffail/benthos/lib/metrics"
-	"github.com/Jeffail/benthos/lib/types"
-	sess "github.com/Jeffail/benthos/lib/util/aws/session"
-	"github.com/Jeffail/benthos/lib/util/retries"
+	"github.com/Jeffail/benthos/v3/lib/log"
+	"github.com/Jeffail/benthos/v3/lib/message"
+	"github.com/Jeffail/benthos/v3/lib/metrics"
+	"github.com/Jeffail/benthos/v3/lib/types"
+	sess "github.com/Jeffail/benthos/v3/lib/util/aws/session"
+	"github.com/Jeffail/benthos/v3/lib/util/retries"
+	"github.com/Jeffail/benthos/v3/lib/util/text"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/sqs"
@@ -47,9 +52,11 @@ const (
 
 // AmazonSQSConfig contains configuration fields for the output AmazonSQS type.
 type AmazonSQSConfig struct {
-	sessionConfig  `json:",inline" yaml:",inline"`
-	URL            string `json:"url" yaml:"url"`
-	retries.Config `json:",inline" yaml:",inline"`
+	sessionConfig          `json:",inline" yaml:",inline"`
+	URL                    string `json:"url" yaml:"url"`
+	MessageGroupID         string `json:"message_group_id" yaml:"message_group_id"`
+	MessageDeduplicationID string `json:"message_deduplication_id" yaml:"message_deduplication_id"`
+	retries.Config         `json:",inline" yaml:",inline"`
 }
 
 // NewAmazonSQSConfig creates a new Config with default values.
@@ -62,8 +69,10 @@ func NewAmazonSQSConfig() AmazonSQSConfig {
 		sessionConfig: sessionConfig{
 			Config: sess.NewConfig(),
 		},
-		URL:    "",
-		Config: rConf,
+		URL:                    "",
+		MessageGroupID:         "",
+		MessageDeduplicationID: "",
+		Config:                 rConf,
 	}
 }
 
@@ -77,6 +86,9 @@ type AmazonSQS struct {
 	backoff backoff.BackOff
 	session *session.Session
 	sqs     *sqs.SQS
+
+	groupID  *text.InterpolatedString
+	dedupeID *text.InterpolatedString
 
 	closer    sync.Once
 	closeChan chan struct{}
@@ -96,6 +108,13 @@ func NewAmazonSQS(
 		log:       log,
 		stats:     stats,
 		closeChan: make(chan struct{}),
+	}
+
+	if id := conf.MessageGroupID; len(id) > 0 {
+		s.groupID = text.NewInterpolatedString(id)
+	}
+	if id := conf.MessageDeduplicationID; len(id) > 0 {
+		s.dedupeID = text.NewInterpolatedString(id)
 	}
 
 	var err error
@@ -123,6 +142,63 @@ func (a *AmazonSQS) Connect() error {
 	return nil
 }
 
+type sqsAttributes struct {
+	attrMap  map[string]*sqs.MessageAttributeValue
+	groupID  *string
+	dedupeID *string
+}
+
+var sqsAttributeKeyInvalidCharRegexp = regexp.MustCompile(`(^\.)|(\.\.)|(^aws\.)|(^amazon\.)|(\.$)|([^a-z_\-\.]+)`)
+var sqsAttributeValueInvalidCharRegexp = regexp.MustCompile(`(^\.)|(\.\.)|(\.$)|([^a-z_\-\.]+)`)
+
+func isValidSQSAttribute(k, v string) bool {
+	return len(sqsAttributeKeyInvalidCharRegexp.FindStringIndex(strings.ToLower(k))) == 0 &&
+		len(sqsAttributeValueInvalidCharRegexp.FindStringIndex(strings.ToLower(v))) == 0
+}
+
+func (a *AmazonSQS) getSQSAttributes(msg types.Message, i int) sqsAttributes {
+	p := msg.Get(i)
+	keys := []string{}
+	p.Metadata().Iter(func(k, v string) error {
+		if isValidSQSAttribute(k, v) {
+			keys = append(keys, k)
+		} else {
+			a.log.Debugf("Rejecting metadata key '%v' due to invalid characters\n", k)
+		}
+		return nil
+	})
+	var values map[string]*sqs.MessageAttributeValue
+	if len(keys) > 0 {
+		sort.Strings(keys)
+		values = map[string]*sqs.MessageAttributeValue{}
+
+		for i, k := range keys {
+			values[k] = &sqs.MessageAttributeValue{
+				DataType:    aws.String("String"),
+				StringValue: aws.String(p.Metadata().Get(k)),
+			}
+			if i == 9 {
+				break
+			}
+		}
+	}
+
+	lMsg := message.Lock(msg, i)
+	var groupID, dedupeID *string
+	if a.groupID != nil {
+		groupID = aws.String(a.groupID.Get(lMsg))
+	}
+	if a.dedupeID != nil {
+		dedupeID = aws.String(a.dedupeID.Get(lMsg))
+	}
+
+	return sqsAttributes{
+		attrMap:  values,
+		groupID:  groupID,
+		dedupeID: dedupeID,
+	}
+}
+
 // Write attempts to write message contents to a target SQS.
 func (a *AmazonSQS) Write(msg types.Message) error {
 	if a.session == nil {
@@ -130,10 +206,18 @@ func (a *AmazonSQS) Write(msg types.Message) error {
 	}
 
 	entries := []*sqs.SendMessageBatchRequestEntry{}
+	attrMap := map[string]sqsAttributes{}
 	msg.Iter(func(i int, p types.Part) error {
+		id := strconv.FormatInt(int64(i), 10)
+		attrs := a.getSQSAttributes(msg, i)
+		attrMap[id] = attrs
+
 		entries = append(entries, &sqs.SendMessageBatchRequestEntry{
-			Id:          aws.String(strconv.FormatInt(int64(i), 10)),
-			MessageBody: aws.String(string(p.Get())),
+			Id:                     aws.String(id),
+			MessageBody:            aws.String(string(p.Get())),
+			MessageAttributes:      attrs.attrMap,
+			MessageGroupId:         attrs.groupID,
+			MessageDeduplicationId: attrs.dedupeID,
 		})
 		return nil
 	})
@@ -173,13 +257,17 @@ func (a *AmazonSQS) Write(msg types.Message) error {
 			input.Entries = []*sqs.SendMessageBatchRequestEntry{}
 			for _, v := range unproc {
 				if *v.SenderFault {
-					err = fmt.Errorf("record failed with code: %v", *v.Code)
+					err = fmt.Errorf("record failed with code: %v, message: %v", *v.Code, *v.Message)
 					a.log.Errorf("SQS record error: %v\n", err)
 					return err
 				}
+				aMap := attrMap[*v.Id]
 				input.Entries = append(input.Entries, &sqs.SendMessageBatchRequestEntry{
-					Id:          v.Id,
-					MessageBody: v.Message,
+					Id:                     v.Id,
+					MessageBody:            v.Message,
+					MessageAttributes:      aMap.attrMap,
+					MessageGroupId:         aMap.groupID,
+					MessageDeduplicationId: aMap.dedupeID,
 				})
 			}
 			err = fmt.Errorf("failed to send %v messages", len(unproc))

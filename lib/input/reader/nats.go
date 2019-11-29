@@ -21,16 +21,17 @@
 package reader
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/Jeffail/benthos/lib/log"
-	"github.com/Jeffail/benthos/lib/message"
-	"github.com/Jeffail/benthos/lib/metrics"
-	"github.com/Jeffail/benthos/lib/types"
-	nats "github.com/nats-io/go-nats"
+	"github.com/Jeffail/benthos/v3/lib/log"
+	"github.com/Jeffail/benthos/v3/lib/message"
+	"github.com/Jeffail/benthos/v3/lib/metrics"
+	"github.com/Jeffail/benthos/v3/lib/types"
+	"github.com/nats-io/nats.go"
 )
 
 //------------------------------------------------------------------------------
@@ -71,7 +72,7 @@ type NATS struct {
 }
 
 // NewNATS creates a new NATS input type.
-func NewNATS(conf NATSConfig, log log.Modular, stats metrics.Type) (Type, error) {
+func NewNATS(conf NATSConfig, log log.Modular, stats metrics.Type) (*NATS, error) {
 	n := NATS{
 		conf:          conf,
 		stats:         stats,
@@ -90,6 +91,11 @@ func NewNATS(conf NATSConfig, log log.Modular, stats metrics.Type) (Type, error)
 
 // Connect establishes a connection to a NATS server.
 func (n *NATS) Connect() error {
+	return n.ConnectWithContext(context.Background())
+}
+
+// ConnectWithContext establishes a connection to a NATS server.
+func (n *NATS) ConnectWithContext(ctx context.Context) error {
 	n.cMut.Lock()
 	defer n.cMut.Unlock()
 
@@ -141,6 +147,12 @@ func (n *NATS) disconnect() {
 
 // Read attempts to read a new message from the NATS subject.
 func (n *NATS) Read() (types.Message, error) {
+	msg, _, err := n.ReadWithContext(context.Background())
+	return msg, err
+}
+
+// ReadWithContext attempts to read a new message from the NATS subject.
+func (n *NATS) ReadWithContext(ctx context.Context) (types.Message, AsyncAckFn, error) {
 	n.cMut.Lock()
 	natsChan := n.natsChan
 	n.cMut.Unlock()
@@ -149,17 +161,19 @@ func (n *NATS) Read() (types.Message, error) {
 	var open bool
 	select {
 	case msg, open = <-natsChan:
+	case <-ctx.Done():
+		return nil, nil, types.ErrTimeout
 	case _, open = <-n.interruptChan:
 	}
 	if !open {
 		n.disconnect()
-		return nil, types.ErrNotConnected
+		return nil, nil, types.ErrNotConnected
 	}
 
 	bmsg := message.New([][]byte{msg.Data})
 	bmsg.Get(0).Metadata().Set("nats_subject", msg.Subject)
 
-	return bmsg, nil
+	return bmsg, noopAsyncAckFn, nil
 }
 
 // Acknowledge is a noop since NATS messages do not support acknowledgments.

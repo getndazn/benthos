@@ -24,8 +24,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/Jeffail/benthos/lib/message/metadata"
-	"github.com/Jeffail/benthos/lib/types"
+	"github.com/Jeffail/benthos/v3/lib/message/metadata"
+	"github.com/Jeffail/benthos/v3/lib/types"
 )
 
 //------------------------------------------------------------------------------
@@ -52,6 +52,19 @@ func GetAllBytes(m types.Message) [][]byte {
 		return nil
 	})
 	return parts
+}
+
+// GetAllBytesLen returns total length of message content in bytes
+func GetAllBytesLen(m types.Message) int {
+	if m.Len() == 0 {
+		return 0
+	}
+	length := 0
+	m.Iter(func(i int, p types.Part) error {
+		length += len(p.Get())
+		return nil
+	})
+	return length
 }
 
 //------------------------------------------------------------------------------

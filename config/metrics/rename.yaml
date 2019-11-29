@@ -23,6 +23,7 @@ output:
 resources:
   caches: {}
   conditions: {}
+  processors: {}
   rate_limits: {}
 logger:
   prefix: benthos
@@ -33,7 +34,6 @@ logger:
     '@service': benthos
 metrics:
   type: rename
-  prefix: benthos
   rename:
     by_regexp: []
     child: {}

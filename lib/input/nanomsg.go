@@ -21,10 +21,10 @@
 package input
 
 import (
-	"github.com/Jeffail/benthos/lib/input/reader"
-	"github.com/Jeffail/benthos/lib/log"
-	"github.com/Jeffail/benthos/lib/metrics"
-	"github.com/Jeffail/benthos/lib/types"
+	"github.com/Jeffail/benthos/v3/lib/input/reader"
+	"github.com/Jeffail/benthos/v3/lib/log"
+	"github.com/Jeffail/benthos/v3/lib/metrics"
+	"github.com/Jeffail/benthos/v3/lib/types"
 )
 
 //------------------------------------------------------------------------------
@@ -35,6 +35,10 @@ func init() {
 		description: `
 The scalability protocols are common communication patterns. This input should
 be compatible with any implementation, but specifically targets Nanomsg.
+
+Messages consumed by this input can be processed in parallel, meaning a single
+instance of this input can utilise any number of threads within a
+` + "`pipeline`" + ` section of a config.
 
 Currently only PULL and SUB sockets are supported.`,
 	}
@@ -48,7 +52,7 @@ func NewNanomsg(conf Config, mgr types.Manager, log log.Modular, stats metrics.T
 	if err != nil {
 		return nil, err
 	}
-	return NewReader("nanomsg", reader.NewPreserver(s), log, stats)
+	return NewAsyncReader(TypeNanomsg, true, reader.NewAsyncPreserver(s), log, stats)
 }
 
 //------------------------------------------------------------------------------

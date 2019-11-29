@@ -26,6 +26,7 @@ output:
 resources:
   caches: {}
   conditions: {}
+  processors: {}
   rate_limits: {}
 logger:
   prefix: benthos
@@ -36,8 +37,8 @@ logger:
     '@service': benthos
 metrics:
   type: http_server
-  http_server: {}
-  prefix: benthos
+  http_server:
+    prefix: benthos
 tracer:
   type: none
   none: {}

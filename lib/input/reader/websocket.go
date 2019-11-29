@@ -21,16 +21,17 @@
 package reader
 
 import (
+	"context"
 	"net/http"
 	"net/url"
 	"sync"
 	"time"
 
-	"github.com/Jeffail/benthos/lib/log"
-	"github.com/Jeffail/benthos/lib/message"
-	"github.com/Jeffail/benthos/lib/metrics"
-	"github.com/Jeffail/benthos/lib/types"
-	"github.com/Jeffail/benthos/lib/util/http/auth"
+	"github.com/Jeffail/benthos/v3/lib/log"
+	"github.com/Jeffail/benthos/v3/lib/message"
+	"github.com/Jeffail/benthos/v3/lib/metrics"
+	"github.com/Jeffail/benthos/v3/lib/types"
+	"github.com/Jeffail/benthos/v3/lib/util/http/auth"
 	"github.com/gorilla/websocket"
 )
 
@@ -93,6 +94,11 @@ func (w *Websocket) getWS() *websocket.Conn {
 
 // Connect establishes a connection to a Websocket server.
 func (w *Websocket) Connect() error {
+	return w.ConnectWithContext(context.Background())
+}
+
+// ConnectWithContext establishes a connection to a Websocket server.
+func (w *Websocket) ConnectWithContext(ctx context.Context) error {
 	w.lock.Lock()
 	defer w.lock.Unlock()
 
@@ -135,9 +141,15 @@ func (w *Websocket) Connect() error {
 
 // Read attempts to read a new message from the websocket.
 func (w *Websocket) Read() (types.Message, error) {
+	msg, _, err := w.ReadWithContext(context.Background())
+	return msg, err
+}
+
+// ReadWithContext attempts to read a new message from the websocket.
+func (w *Websocket) ReadWithContext(ctx context.Context) (types.Message, AsyncAckFn, error) {
 	client := w.getWS()
 	if client == nil {
-		return nil, types.ErrNotConnected
+		return nil, nil, types.ErrNotConnected
 	}
 
 	_, data, err := client.ReadMessage()
@@ -146,10 +158,10 @@ func (w *Websocket) Read() (types.Message, error) {
 		w.client = nil
 		w.lock.Unlock()
 		err = types.ErrNotConnected
-		return nil, err
+		return nil, nil, err
 	}
 
-	return message.New([][]byte{data}), nil
+	return message.New([][]byte{data}), noopAsyncAckFn, nil
 }
 
 // Acknowledge instructs whether the pending messages were propagated

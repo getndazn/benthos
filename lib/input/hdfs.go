@@ -23,10 +23,10 @@ package input
 import (
 	"errors"
 
-	"github.com/Jeffail/benthos/lib/input/reader"
-	"github.com/Jeffail/benthos/lib/log"
-	"github.com/Jeffail/benthos/lib/metrics"
-	"github.com/Jeffail/benthos/lib/types"
+	"github.com/Jeffail/benthos/v3/lib/input/reader"
+	"github.com/Jeffail/benthos/v3/lib/log"
+	"github.com/Jeffail/benthos/v3/lib/metrics"
+	"github.com/Jeffail/benthos/v3/lib/types"
 )
 
 //------------------------------------------------------------------------------
@@ -35,8 +35,12 @@ func init() {
 	Constructors[TypeHDFS] = TypeSpec{
 		constructor: NewHDFS,
 		description: `
-Reads files from a HDFS directory, where each discrete file will be consumed as a single
-message payload.
+Reads files from a HDFS directory, where each discrete file will be consumed as
+a single message payload.
+
+Messages consumed by this input can be processed in parallel, meaning a single
+instance of this input can utilise any number of threads within a
+` + "`pipeline`" + ` section of a config.
 
 ### Metadata
 
@@ -59,9 +63,10 @@ func NewHDFS(conf Config, mgr types.Manager, log log.Modular, stats metrics.Type
 	if len(conf.HDFS.Directory) == 0 {
 		return nil, errors.New("invalid directory (cannot be empty)")
 	}
-	return NewReader(
-		"hdfs",
-		reader.NewPreserver(
+	return NewAsyncReader(
+		TypeHDFS,
+		true,
+		reader.NewAsyncPreserver(
 			reader.NewHDFS(conf.HDFS, log, stats),
 		),
 		log, stats,

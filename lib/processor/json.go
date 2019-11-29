@@ -27,12 +27,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Jeffail/benthos/lib/log"
-	"github.com/Jeffail/benthos/lib/message"
-	"github.com/Jeffail/benthos/lib/metrics"
-	"github.com/Jeffail/benthos/lib/types"
-	"github.com/Jeffail/benthos/lib/util/text"
-	"github.com/Jeffail/gabs"
+	"github.com/Jeffail/benthos/v3/lib/log"
+	"github.com/Jeffail/benthos/v3/lib/message"
+	"github.com/Jeffail/benthos/v3/lib/metrics"
+	"github.com/Jeffail/benthos/v3/lib/types"
+	"github.com/Jeffail/benthos/v3/lib/util/text"
+	"github.com/Jeffail/gabs/v2"
 	"github.com/opentracing/opentracing-go"
 )
 
@@ -45,7 +45,9 @@ func init() {
 Parses messages as a JSON document, performs a mutation on the data, and then
 overwrites the previous contents with the new value.
 
-If the path is empty or "." the root of the data will be targeted.
+The field ` + "`path`" + ` is a [dot separated path](../field_paths.md) which,
+for most operators, determines the field within the payload to be targeted. If
+the path is empty or "." the root of the data will be targeted.
 
 This processor will interpolate functions within the 'value' field, you can find
 a list of functions [here](../config_interpolation.md#functions).
@@ -118,7 +120,13 @@ json:
 ` + "```" + `
 
 The value will be converted into '{"foo":{"bar":5}}'. If the YAML object
-contains keys that aren't strings those fields will be ignored.`,
+contains keys that aren't strings those fields will be ignored.
+
+#### ` + "`split`" + `
+
+Splits a string field by a value and replaces the original string with an array
+containing the results of the split. This operator requires both the path value
+and the contents of the ` + "`value`" + ` field to be strings.`,
 	}
 }
 
@@ -193,6 +201,9 @@ func (r *rawJSONValue) UnmarshalYAML(unmarshal func(interface{}) error) error {
 }
 
 func (r rawJSONValue) MarshalYAML() (interface{}, error) {
+	if r == nil {
+		return nil, nil
+	}
 	var val interface{}
 	if err := json.Unmarshal(r, &val); err != nil {
 		return nil, err
@@ -227,17 +238,22 @@ type jsonOperator func(body interface{}, value json.RawMessage) (interface{}, er
 func newSetOperator(path []string) jsonOperator {
 	return func(body interface{}, value json.RawMessage) (interface{}, error) {
 		if len(path) == 0 {
-			return value, nil
+			var data interface{}
+			if value != nil {
+				if err := json.Unmarshal([]byte(value), &data); err != nil {
+					return nil, fmt.Errorf("failed to parse value: %v", err)
+				}
+			}
+			return data, nil
 		}
 
-		gPart, err := gabs.Consume(body)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse message body: %v", err)
-		}
+		gPart := gabs.Wrap(body)
 
 		var data interface{}
-		if err = json.Unmarshal([]byte(value), &data); err != nil {
-			return nil, fmt.Errorf("failed to parse value: %v", err)
+		if value != nil {
+			if err := json.Unmarshal([]byte(value), &data); err != nil {
+				return nil, fmt.Errorf("failed to parse value: %v", err)
+			}
 		}
 
 		gPart.Set(data, path...)
@@ -246,27 +262,29 @@ func newSetOperator(path []string) jsonOperator {
 }
 
 func newMoveOperator(srcPath, destPath []string) (jsonOperator, error) {
-	if len(srcPath) == 0 {
-		return nil, errors.New("an empty source path is not valid for the move operator")
-	}
-	if len(destPath) == 0 {
-		return nil, errors.New("an empty destination path is not valid for the move operator")
+	if len(srcPath) == 0 && len(destPath) == 0 {
+		return nil, errors.New("an empty source and destination path is not valid for the move operator")
 	}
 	return func(body interface{}, value json.RawMessage) (interface{}, error) {
-		gPart, err := gabs.Consume(body)
-		if err != nil {
-			return nil, err
+		var gPart *gabs.Container
+		var gSrc interface{}
+		if len(srcPath) > 0 {
+			gPart = gabs.Wrap(body)
+			gSrc = gPart.S(srcPath...).Data()
+			gPart.Delete(srcPath...)
+		} else {
+			gPart = gabs.New()
+			gSrc = body
 		}
-
-		gSrc := gPart.S(srcPath...).Data()
 		if gSrc == nil {
 			return nil, fmt.Errorf("item not found at path '%v'", strings.Join(srcPath, "."))
 		}
-
-		if _, err = gPart.Set(gSrc, destPath...); err != nil {
+		if len(destPath) == 0 {
+			return gSrc, nil
+		}
+		if _, err := gPart.Set(gSrc, destPath...); err != nil {
 			return nil, fmt.Errorf("failed to set destination path '%v': %v", strings.Join(destPath, "."), err)
 		}
-		gPart.Delete(srcPath...)
 		return gPart.Data(), nil
 	}, nil
 }
@@ -279,17 +297,13 @@ func newCopyOperator(srcPath, destPath []string) (jsonOperator, error) {
 		return nil, errors.New("an empty destination path is not valid for the copy operator")
 	}
 	return func(body interface{}, value json.RawMessage) (interface{}, error) {
-		gPart, err := gabs.Consume(body)
-		if err != nil {
-			return nil, err
-		}
-
+		gPart := gabs.Wrap(body)
 		gSrc := gPart.S(srcPath...).Data()
 		if gSrc == nil {
 			return nil, fmt.Errorf("item not found at path '%v'", strings.Join(srcPath, "."))
 		}
 
-		if _, err = gPart.Set(gSrc, destPath...); err != nil {
+		if _, err := gPart.Set(gSrc, destPath...); err != nil {
 			return nil, fmt.Errorf("failed to set destination path '%v': %v", strings.Join(destPath, "."), err)
 		}
 		return gPart.Data(), nil
@@ -298,11 +312,7 @@ func newCopyOperator(srcPath, destPath []string) (jsonOperator, error) {
 
 func newSelectOperator(path []string) jsonOperator {
 	return func(body interface{}, value json.RawMessage) (interface{}, error) {
-		gPart, err := gabs.Consume(body)
-		if err != nil {
-			return nil, err
-		}
-
+		gPart := gabs.Wrap(body)
 		target := gPart
 		if len(path) > 0 {
 			target = gPart.Search(path...)
@@ -325,12 +335,8 @@ func newDeleteOperator(path []string) jsonOperator {
 			return nil, nil
 		}
 
-		gPart, err := gabs.Consume(body)
-		if err != nil {
-			return nil, err
-		}
-
-		if err = gPart.Delete(path...); err != nil {
+		gPart := gabs.Wrap(body)
+		if err := gPart.Delete(path...); err != nil {
 			return nil, err
 		}
 		return gPart.Data(), nil
@@ -339,10 +345,7 @@ func newDeleteOperator(path []string) jsonOperator {
 
 func newCleanOperator(path []string) jsonOperator {
 	return func(body interface{}, value json.RawMessage) (interface{}, error) {
-		gRoot, err := gabs.Consume(body)
-		if err != nil {
-			return nil, err
-		}
+		gRoot := gabs.Wrap(body)
 
 		var cleanValueFn func(g interface{}) interface{}
 		var cleanArrayFn func(g []interface{}) []interface{}
@@ -409,16 +412,14 @@ func newCleanOperator(path []string) jsonOperator {
 
 func newAppendOperator(path []string) jsonOperator {
 	return func(body interface{}, value json.RawMessage) (interface{}, error) {
-		gPart, err := gabs.Consume(body)
-		if err != nil {
-			return nil, err
-		}
-
+		gPart := gabs.Wrap(body)
 		var array []interface{}
 
 		var valueParsed interface{}
-		if err = json.Unmarshal(value, &valueParsed); err != nil {
-			return nil, err
+		if value != nil {
+			if err := json.Unmarshal(value, &valueParsed); err != nil {
+				return nil, err
+			}
 		}
 		switch t := valueParsed.(type) {
 		case []interface{}:
@@ -444,6 +445,35 @@ func newAppendOperator(path []string) jsonOperator {
 	}
 }
 
+func newSplitOperator(path []string) jsonOperator {
+	return func(body interface{}, value json.RawMessage) (interface{}, error) {
+		gPart := gabs.Wrap(body)
+
+		var valueParsed string
+		if value != nil {
+			if err := json.Unmarshal(value, &valueParsed); err != nil {
+				return nil, err
+			}
+		}
+		if len(valueParsed) == 0 {
+			return nil, errors.New("value field must be a non-empty string")
+		}
+
+		targetStr, ok := gPart.S(path...).Data().(string)
+		if !ok {
+			return nil, errors.New("path value must be a string")
+		}
+
+		var values []interface{}
+		for _, v := range strings.Split(targetStr, valueParsed) {
+			values = append(values, v)
+		}
+
+		gPart.Set(values, path...)
+		return gPart.Data(), nil
+	}
+}
+
 func getOperator(opStr string, path []string, value json.RawMessage) (jsonOperator, error) {
 	var destPath []string
 	if opStr == "move" || opStr == "copy" {
@@ -460,6 +490,8 @@ func getOperator(opStr string, path []string, value json.RawMessage) (jsonOperat
 		return newSetOperator(path), nil
 	case "select":
 		return newSelectOperator(path), nil
+	case "split":
+		return newSplitOperator(path), nil
 	case "copy":
 		return newCopyOperator(path, destPath)
 	case "move":

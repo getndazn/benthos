@@ -27,11 +27,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Jeffail/benthos/lib/condition"
-	"github.com/Jeffail/benthos/lib/log"
-	"github.com/Jeffail/benthos/lib/metrics"
-	"github.com/Jeffail/benthos/lib/response"
-	"github.com/Jeffail/benthos/lib/types"
+	"github.com/Jeffail/benthos/v3/lib/condition"
+	"github.com/Jeffail/benthos/v3/lib/log"
+	"github.com/Jeffail/benthos/v3/lib/metrics"
+	"github.com/Jeffail/benthos/v3/lib/response"
+	"github.com/Jeffail/benthos/v3/lib/types"
 )
 
 func TestReadUntilInput(t *testing.T) {
@@ -157,47 +157,75 @@ func testReadUntilRetry(inConf Config, t *testing.T) {
 		t.Fatal(err)
 	}
 
-	expMsgs := []string{
-		"foo",
-		"bar",
+	expMsgs := map[string]struct{}{
+		"foo": {},
+		"bar": {},
 	}
 
-	for _, exp := range expMsgs {
-		var tran types.Transaction
-		var open bool
+	var tran types.Transaction
+	var open bool
 
+	resChans := []chan<- types.Response{}
+	i := 0
+	for len(expMsgs) > 0 && i < 10 {
 		// First try
 		select {
 		case tran, open = <-in.TransactionChan():
 			if !open {
-				t.Fatal("transaction chan closed")
+				t.Fatalf("transaction chan closed at %v", i)
 			}
 		case <-time.After(time.Second):
 			t.Fatal("timed out")
 		}
 
-		if act := string(tran.Payload.Get(0).Get()); exp != act {
-			t.Errorf("Wrong message contents: %v != %v", act, exp)
+		i++
+		act := string(tran.Payload.Get(0).Get())
+		if _, exists := expMsgs[act]; !exists {
+			t.Errorf("Unexpected message contents '%v': %v", i, act)
+		} else {
+			delete(expMsgs, act)
 		}
+		resChans = append(resChans, tran.ResponseChan)
+	}
 
+	select {
+	case <-in.TransactionChan():
+		t.Error("Unexpected transaction")
+		return
+	case <-time.After(time.Millisecond * 500):
+	}
+
+	for _, rChan := range resChans {
 		select {
-		case tran.ResponseChan <- response.NewError(errors.New("failed")):
+		case rChan <- response.NewError(errors.New("failed")):
 		case <-time.After(time.Second):
 			t.Fatal("timed out")
 		}
+	}
 
+	expMsgs = map[string]struct{}{
+		"foo": {},
+		"bar": {},
+		"baz": {},
+	}
+
+remainingLoop:
+	for len(expMsgs) > 0 {
 		// Second try
 		select {
 		case tran, open = <-in.TransactionChan():
 			if !open {
-				t.Fatal("transaction chan closed")
+				break remainingLoop
 			}
 		case <-time.After(time.Second):
 			t.Fatal("timed out")
 		}
 
-		if act := string(tran.Payload.Get(0).Get()); exp != act {
-			t.Errorf("Wrong message contents: %v != %v", act, exp)
+		act := string(tran.Payload.Get(0).Get())
+		if _, exists := expMsgs[act]; !exists {
+			t.Errorf("Unexpected message contents '%v': %v", i, act)
+		} else {
+			delete(expMsgs, act)
 		}
 
 		select {
@@ -205,6 +233,9 @@ func testReadUntilRetry(inConf Config, t *testing.T) {
 		case <-time.After(time.Second):
 			t.Fatal("timed out")
 		}
+	}
+	if len(expMsgs) == 3 {
+		t.Error("Expected at least one extra message")
 	}
 
 	// Should close automatically now

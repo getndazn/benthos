@@ -25,9 +25,9 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/Jeffail/benthos/lib/log"
-	"github.com/Jeffail/benthos/lib/metrics"
-	"github.com/Jeffail/benthos/lib/types"
+	"github.com/Jeffail/benthos/v3/lib/log"
+	"github.com/Jeffail/benthos/v3/lib/metrics"
+	"github.com/Jeffail/benthos/v3/lib/types"
 	yaml "gopkg.in/yaml.v3"
 )
 
@@ -121,6 +121,7 @@ plugins:
     plugin:
       bar: change this
       foo: default
+processors: {}
 rate_limits: {}
 ` + "```" + `
 
@@ -138,6 +139,7 @@ plugins:
       foo: default
       bar: change this
       baz: 10
+processors: {}
 rate_limits: {}
 ` + "```" + `
 `

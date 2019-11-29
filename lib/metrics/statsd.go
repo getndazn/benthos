@@ -25,7 +25,7 @@ import (
 	"io/ioutil"
 	"time"
 
-	"github.com/Jeffail/benthos/lib/log"
+	"github.com/Jeffail/benthos/v3/lib/log"
 	"github.com/quipo/statsd"
 )
 
@@ -54,6 +54,7 @@ func (w *wrappedLogger) Println(v ...interface{}) {
 
 // StatsdConfig is config for the Statsd metrics type.
 type StatsdConfig struct {
+	Prefix      string `json:"prefix" yaml:"prefix"`
 	Address     string `json:"address" yaml:"address"`
 	FlushPeriod string `json:"flush_period" yaml:"flush_period"`
 	Network     string `json:"network" yaml:"network"`
@@ -62,6 +63,7 @@ type StatsdConfig struct {
 // NewStatsdConfig creates an StatsdConfig struct with default values.
 func NewStatsdConfig() StatsdConfig {
 	return StatsdConfig{
+		Prefix:      "benthos",
 		Address:     "localhost:4040",
 		FlushPeriod: "100ms",
 		Network:     "udp",
@@ -125,7 +127,7 @@ func NewStatsd(config Config, opts ...func(Type)) (Type, error) {
 		opt(s)
 	}
 
-	prefix := config.Prefix
+	prefix := config.Statsd.Prefix
 	if len(prefix) > 0 && prefix[len(prefix)-1] != '.' {
 		prefix = prefix + "."
 	}
@@ -161,7 +163,7 @@ func (h *Statsd) GetCounter(path string) StatCounter {
 // GetCounterVec returns a stat counter object for a path with the labels
 // discarded.
 func (h *Statsd) GetCounterVec(path string, n []string) StatCounterVec {
-	return fakeCounterVec(func() StatCounter {
+	return fakeCounterVec(func([]string) StatCounter {
 		return &StatsdStat{
 			path: path,
 			s:    h.s,
@@ -180,7 +182,7 @@ func (h *Statsd) GetTimer(path string) StatTimer {
 // GetTimerVec returns a stat timer object for a path with the labels
 // discarded.
 func (h *Statsd) GetTimerVec(path string, n []string) StatTimerVec {
-	return fakeTimerVec(func() StatTimer {
+	return fakeTimerVec(func([]string) StatTimer {
 		return &StatsdStat{
 			path: path,
 			s:    h.s,
@@ -199,7 +201,7 @@ func (h *Statsd) GetGauge(path string) StatGauge {
 // GetGaugeVec returns a stat timer object for a path with the labels
 // discarded.
 func (h *Statsd) GetGaugeVec(path string, n []string) StatGaugeVec {
-	return fakeGaugeVec(func() StatGauge {
+	return fakeGaugeVec(func([]string) StatGauge {
 		return &StatsdStat{
 			path: path,
 			s:    h.s,

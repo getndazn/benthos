@@ -21,17 +21,18 @@
 package integration
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/Jeffail/benthos/lib/input/reader"
-	"github.com/Jeffail/benthos/lib/log"
-	"github.com/Jeffail/benthos/lib/message"
-	"github.com/Jeffail/benthos/lib/metrics"
-	"github.com/Jeffail/benthos/lib/output/writer"
-	"github.com/Jeffail/benthos/lib/types"
+	"github.com/Jeffail/benthos/v3/lib/input/reader"
+	"github.com/Jeffail/benthos/v3/lib/log"
+	"github.com/Jeffail/benthos/v3/lib/message"
+	"github.com/Jeffail/benthos/v3/lib/metrics"
+	"github.com/Jeffail/benthos/v3/lib/output/writer"
+	"github.com/Jeffail/benthos/v3/lib/types"
 	"github.com/ory/dockertest"
 )
 
@@ -39,6 +40,8 @@ func TestRedisStreamsIntegration(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
 	}
+
+	t.Parallel()
 
 	pool, err := dockertest.NewPool("")
 	if err != nil {
@@ -50,6 +53,12 @@ func TestRedisStreamsIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Could not start resource: %s", err)
 	}
+	defer func() {
+		if err = pool.Purge(resource); err != nil {
+			t.Logf("Failed to clean up docker resource: %v", err)
+		}
+	}()
+	resource.Expire(900)
 
 	url := fmt.Sprintf("tcp://localhost:%v", resource.GetPort("6379/tcp"))
 
@@ -69,14 +78,14 @@ func TestRedisStreamsIntegration(t *testing.T) {
 		t.Fatalf("Could not connect to docker resource: %s", err)
 	}
 
-	defer func() {
-		if err = pool.Purge(resource); err != nil {
-			t.Logf("Failed to clean up docker resource: %v", err)
-		}
-	}()
-
 	t.Run("TestRedisStreamsSinglePart", func(te *testing.T) {
 		testRedisStreamsSinglePart(url, te)
+	})
+	t.Run("TestRedisStreamsALO", func(te *testing.T) {
+		testRedisStreamsALO(url, te)
+	})
+	t.Run("TestRedisStreamsAsyncALO", func(te *testing.T) {
+		testRedisStreamsAsyncALO(url, te)
 	})
 	t.Run("TestRedisStreamsMultiplePart", func(te *testing.T) {
 		testRedisStreamsMultiplePart(url, te)
@@ -105,6 +114,102 @@ func createRedisStreamsInputOutput(
 		return
 	}
 	return
+}
+
+func testRedisStreamsALO(url string, t *testing.T) {
+	inConf := reader.NewRedisStreamsConfig()
+	inConf.URL = url
+	inConf.Streams = []string{"benthos_test_streams_alo"}
+	inConf.StartFromOldest = false
+
+	outConf := writer.NewRedisStreamsConfig()
+	outConf.URL = url
+	outConf.Stream = "benthos_test_streams_alo"
+
+	outputCtr := func() (writer.Type, error) {
+		mOutput, err := writer.NewRedisStreams(outConf, log.Noop(), metrics.Noop())
+		if err != nil {
+			return nil, err
+		}
+		if err = mOutput.Connect(); err != nil {
+			return nil, err
+		}
+		if err = mOutput.Write(message.New([][]byte{[]byte(`IGNORE ME`)})); err != nil {
+			return nil, err
+		}
+		return mOutput, nil
+	}
+	inputCtr := func() (reader.Type, error) {
+		var err error
+		var mInput reader.Type
+		if mInput, err = reader.NewRedisStreams(inConf, log.Noop(), metrics.Noop()); err != nil {
+			return nil, err
+		}
+		mInput = reader.NewPreserver(mInput)
+		if err = mInput.Connect(); err != nil {
+			return nil, err
+		}
+		return mInput, nil
+	}
+
+	checkALOSynchronous(outputCtr, inputCtr, t)
+
+	inConf.Streams = []string{"benthos_test_streams_alo_with_dc"}
+	outConf.Stream = "benthos_test_streams_alo_with_dc"
+
+	checkALOSynchronousAndDie(outputCtr, inputCtr, t)
+}
+
+func testRedisStreamsAsyncALO(url string, t *testing.T) {
+	inConf := reader.NewRedisStreamsConfig()
+	inConf.URL = url
+	inConf.Streams = []string{"benthos_test_streams_alo_async"}
+	inConf.StartFromOldest = false
+
+	outConf := writer.NewRedisStreamsConfig()
+	outConf.URL = url
+	outConf.Stream = "benthos_test_streams_alo_async"
+
+	outputCtr := func() (writer.Type, error) {
+		mOutput, err := writer.NewRedisStreams(outConf, log.Noop(), metrics.Noop())
+		if err != nil {
+			return nil, err
+		}
+		if err = mOutput.Connect(); err != nil {
+			return nil, err
+		}
+		if err = mOutput.Write(message.New([][]byte{[]byte(`IGNORE ME`)})); err != nil {
+			return nil, err
+		}
+		return mOutput, nil
+	}
+	inputCtr := func() (reader.Async, error) {
+		ctx, done := context.WithTimeout(context.Background(), time.Second)
+		defer done()
+
+		var err error
+		var mInput reader.Async
+		if mInput, err = reader.NewRedisStreams(inConf, log.Noop(), metrics.Noop()); err != nil {
+			return nil, err
+		}
+		mInput = reader.NewAsyncPreserver(mInput)
+		if err = mInput.ConnectWithContext(ctx); err != nil {
+			return nil, err
+		}
+		return mInput, nil
+	}
+
+	checkALOSynchronousAsync(outputCtr, inputCtr, t)
+
+	inConf.Streams = []string{"benthos_test_streams_alo_with_dc_async"}
+	outConf.Stream = "benthos_test_streams_alo_with_dc_async"
+
+	checkALOSynchronousAndDieAsync(outputCtr, inputCtr, t)
+
+	inConf.Streams = []string{"benthos_test_streams_parallel_async"}
+	outConf.Stream = "benthos_test_streams_parallel_async"
+
+	checkALOParallelAsync(outputCtr, inputCtr, 100, t)
 }
 
 func testRedisStreamsSinglePart(url string, t *testing.T) {

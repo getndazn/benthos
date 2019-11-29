@@ -24,9 +24,9 @@ import (
 	"os"
 	"testing"
 
-	"github.com/Jeffail/benthos/lib/log"
-	"github.com/Jeffail/benthos/lib/metrics"
-	"github.com/Jeffail/benthos/lib/types"
+	"github.com/Jeffail/benthos/v3/lib/log"
+	"github.com/Jeffail/benthos/v3/lib/metrics"
+	"github.com/Jeffail/benthos/v3/lib/types"
 )
 
 //------------------------------------------------------------------------------
@@ -138,6 +138,48 @@ func TestMemoryCacheCompaction(t *testing.T) {
 	// This key should have been removed from compaction.
 	if _, act := c.Get("foo"); act != expErr {
 		t.Errorf("Wrong error returned: %v != %v", act, expErr)
+	}
+}
+
+func TestMemoryCacheInitValues(t *testing.T) {
+	conf := NewConfig()
+	conf.Type = "memory"
+	conf.Memory.TTL = 0
+	conf.Memory.CompactionInterval = ""
+	conf.Memory.InitValues = map[string]string{
+		"foo":  "bar",
+		"foo2": "bar2",
+	}
+
+	c, err := New(conf, nil, log.Noop(), metrics.Noop())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	exp := "bar"
+	if act, err := c.Get("foo"); err != nil {
+		t.Error(err)
+	} else if string(act) != exp {
+		t.Errorf("Wrong result: %v != %v", string(act), exp)
+	}
+
+	// This should trigger compaction.
+	if err = c.Add("foo3", []byte("bar3")); err != nil {
+		t.Error(err)
+	}
+
+	exp = "bar"
+	if act, err := c.Get("foo"); err != nil {
+		t.Error(err)
+	} else if string(act) != exp {
+		t.Errorf("Wrong result: %v != %v", string(act), exp)
+	}
+
+	exp = "bar2"
+	if act, err := c.Get("foo2"); err != nil {
+		t.Error(err)
+	} else if string(act) != exp {
+		t.Errorf("Wrong result: %v != %v", string(act), exp)
 	}
 }
 

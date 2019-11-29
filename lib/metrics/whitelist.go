@@ -28,7 +28,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/Jeffail/benthos/lib/log"
+	"github.com/Jeffail/benthos/v3/lib/log"
 )
 
 //------------------------------------------------------------------------------
@@ -46,9 +46,6 @@ a path prefix or regular expression matches a metric path it will be included.
 Metrics must be matched using dot notation even if the chosen output uses a
 different form. For example, the path would be 'foo.bar' rather than 'foo_bar'
 even when sending metrics to Prometheus.
-
-The ` + "`prefix`" + ` field in a metrics config is ignored by this type. Please
-configure a prefix at the child level.
 
 ### Paths
 
@@ -223,7 +220,7 @@ func (h *Whitelist) GetCounterVec(path string, n []string) StatCounterVec {
 	if h.allowPath(path) {
 		return h.s.GetCounterVec(path, n)
 	}
-	return fakeCounterVec(func() StatCounter {
+	return fakeCounterVec(func([]string) StatCounter {
 		return DudStat{}
 	})
 }
@@ -242,7 +239,7 @@ func (h *Whitelist) GetTimerVec(path string, n []string) StatTimerVec {
 	if h.allowPath(path) {
 		return h.s.GetTimerVec(path, n)
 	}
-	return fakeTimerVec(func() StatTimer {
+	return fakeTimerVec(func([]string) StatTimer {
 		return DudStat{}
 	})
 }
@@ -261,7 +258,7 @@ func (h *Whitelist) GetGaugeVec(path string, n []string) StatGaugeVec {
 	if h.allowPath(path) {
 		return h.s.GetGaugeVec(path, n)
 	}
-	return fakeGaugeVec(func() StatGauge {
+	return fakeGaugeVec(func([]string) StatGauge {
 		return DudStat{}
 	})
 }

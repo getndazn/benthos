@@ -23,11 +23,13 @@ package reader
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"io"
+	"sync"
 	"time"
 
-	"github.com/Jeffail/benthos/lib/message"
-	"github.com/Jeffail/benthos/lib/types"
+	"github.com/Jeffail/benthos/v3/lib/message"
+	"github.com/Jeffail/benthos/v3/lib/types"
 )
 
 //------------------------------------------------------------------------------
@@ -35,21 +37,22 @@ import (
 // Lines is a reader implementation that continuously reads line delimited
 // messages from an io.Reader type.
 type Lines struct {
-	handleCtor func() (io.Reader, error)
-	onClose    func()
+	handleCtor func(ctx context.Context) (io.Reader, error)
+	onClose    func(ctx context.Context)
 
-	handle  io.Reader
-	scanner *bufio.Scanner
-
-	messageBuffer      *bytes.Buffer
-	messageBufferIndex int
+	mut        sync.Mutex
+	handle     io.Reader
+	shutdownFn func()
+	errChan    chan error
+	msgChan    chan types.Message
 
 	maxBuffer int
 	multipart bool
 	delimiter []byte
 }
 
-// NewLines creates a new reader input type.
+// NewLines creates a new reader input type able to create a feed of line
+// delimited messages from an io.Reader.
 //
 // Callers must provide a constructor function for the target io.Reader, which
 // is called on start up and again each time a reader is exhausted. If the
@@ -65,18 +68,45 @@ func NewLines(
 	options ...func(r *Lines),
 ) (*Lines, error) {
 	r := Lines{
-		handleCtor:    handleCtor,
-		onClose:       onClose,
-		messageBuffer: &bytes.Buffer{},
-		maxBuffer:     bufio.MaxScanTokenSize,
-		multipart:     false,
-		delimiter:     []byte("\n"),
+		handleCtor: func(ctx context.Context) (io.Reader, error) {
+			return handleCtor()
+		},
+		onClose: func(ctx context.Context) {
+			onClose()
+		},
+		maxBuffer: bufio.MaxScanTokenSize,
+		multipart: false,
+		delimiter: []byte("\n"),
 	}
 
 	for _, opt := range options {
 		opt(&r)
 	}
 
+	r.shutdownFn = func() {}
+	return &r, nil
+}
+
+// NewLinesWithContext expands NewLines by requiring context.Context arguments
+// in the provided closures.
+func NewLinesWithContext(
+	handleCtor func(ctx context.Context) (io.Reader, error),
+	onClose func(ctx context.Context),
+	options ...func(r *Lines),
+) (*Lines, error) {
+	r := Lines{
+		handleCtor: handleCtor,
+		onClose:    onClose,
+		maxBuffer:  bufio.MaxScanTokenSize,
+		multipart:  false,
+		delimiter:  []byte("\n"),
+	}
+
+	for _, opt := range options {
+		opt(&r)
+	}
+
+	r.shutdownFn = func() {}
 	return &r, nil
 }
 
@@ -115,18 +145,23 @@ func (r *Lines) closeHandle() {
 		}
 		r.handle = nil
 	}
-	r.scanner = nil
+	r.shutdownFn()
 }
+
+//------------------------------------------------------------------------------
 
 // Connect attempts to establish a new scanner for an io.Reader.
 func (r *Lines) Connect() error {
-	if r.scanner != nil {
-		return nil
-	}
-	r.closeHandle() // Just incase we have an open handle without a scanner.
+	return r.ConnectWithContext(context.Background())
+}
 
-	var err error
-	r.handle, err = r.handleCtor()
+// ConnectWithContext attempts to establish a new scanner for an io.Reader.
+func (r *Lines) ConnectWithContext(ctx context.Context) error {
+	r.mut.Lock()
+	defer r.mut.Unlock()
+	r.closeHandle()
+
+	handle, err := r.handleCtor(ctx)
 	if err != nil {
 		if err == io.EOF {
 			return types.ErrTypeClosed
@@ -134,12 +169,12 @@ func (r *Lines) Connect() error {
 		return err
 	}
 
-	r.scanner = bufio.NewScanner(r.handle)
+	scanner := bufio.NewScanner(handle)
 	if r.maxBuffer != bufio.MaxScanTokenSize {
-		r.scanner.Buffer([]byte{}, r.maxBuffer)
+		scanner.Buffer([]byte{}, r.maxBuffer)
 	}
 
-	r.scanner.Split(func(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	scanner.Split(func(data []byte, atEOF bool) (advance int, token []byte, err error) {
 		if atEOF && len(data) == 0 {
 			return 0, nil, nil
 		}
@@ -158,68 +193,128 @@ func (r *Lines) Connect() error {
 		return 0, nil, nil
 	})
 
+	scannerCtx, shutdownFn := context.WithCancel(context.Background())
+	msgChan := make(chan types.Message)
+	errChan := make(chan error)
+
+	go func() {
+		defer func() {
+			shutdownFn()
+			close(errChan)
+			close(msgChan)
+		}()
+
+		msg := message.New(nil)
+		for scanner.Scan() {
+			partBytes := make([]byte, len(scanner.Bytes()))
+			partSize := copy(partBytes, scanner.Bytes())
+
+			if partSize > 0 {
+				msg.Append(message.NewPart(partBytes))
+				if !r.multipart {
+					select {
+					case msgChan <- msg:
+					case <-scannerCtx.Done():
+						return
+					}
+					msg = message.New(nil)
+				}
+			} else if r.multipart && msg.Len() > 0 {
+				// Empty line means we're finished reading parts for this
+				// message.
+				select {
+				case msgChan <- msg:
+				case <-scannerCtx.Done():
+					return
+				}
+				msg = message.New(nil)
+			}
+		}
+		if msg.Len() > 0 {
+			select {
+			case msgChan <- msg:
+			case <-scannerCtx.Done():
+				return
+			}
+		}
+		if serr := scanner.Err(); serr != nil {
+			select {
+			case errChan <- serr:
+			case <-scannerCtx.Done():
+				return
+			}
+		}
+	}()
+
+	r.handle = handle
+	r.msgChan = msgChan
+	r.errChan = errChan
+	r.shutdownFn = shutdownFn
 	return nil
+}
+
+// ReadWithContext attempts to read a new line from the io.Reader.
+func (r *Lines) ReadWithContext(ctx context.Context) (types.Message, AsyncAckFn, error) {
+	r.mut.Lock()
+	msgChan := r.msgChan
+	errChan := r.errChan
+	r.mut.Unlock()
+
+	select {
+	case msg, open := <-msgChan:
+		if !open {
+			return nil, nil, types.ErrNotConnected
+		}
+		return msg, noopAsyncAckFn, nil
+	case err, open := <-errChan:
+		if !open {
+			return nil, nil, types.ErrNotConnected
+		}
+		return nil, nil, err
+	case <-ctx.Done():
+	}
+	return nil, nil, types.ErrTimeout
 }
 
 // Read attempts to read a new line from the io.Reader.
 func (r *Lines) Read() (types.Message, error) {
-	if r.scanner == nil {
-		return nil, types.ErrNotConnected
-	}
+	r.mut.Lock()
+	msgChan := r.msgChan
+	errChan := r.errChan
+	r.mut.Unlock()
 
-	msg := message.New(nil)
-
-	for r.scanner.Scan() {
-		partSize, err := r.messageBuffer.Write(r.scanner.Bytes())
-		rIndex := r.messageBufferIndex
-		r.messageBufferIndex += partSize
-		if err != nil {
-			return nil, err
+	select {
+	case msg, open := <-msgChan:
+		if !open {
+			return nil, types.ErrNotConnected
 		}
-
-		if partSize > 0 {
-			msg.Append(message.NewPart(r.messageBuffer.Bytes()[rIndex : rIndex+partSize]))
-			if !r.multipart {
-				return msg, nil
-			}
-		} else if r.multipart && msg.Len() > 0 {
-			// Empty line means we're finished reading parts for this
-			// message.
-			return msg, nil
+		return msg, nil
+	case err, open := <-errChan:
+		if !open {
+			return nil, types.ErrNotConnected
 		}
-	}
-
-	if err := r.scanner.Err(); err != nil {
-		r.closeHandle()
 		return nil, err
 	}
-
-	r.closeHandle()
-
-	if msg.Len() > 0 {
-		return msg, nil
-	}
-	return nil, types.ErrNotConnected
 }
 
 // Acknowledge confirms whether or not our unacknowledged messages have been
 // successfully propagated or not.
 func (r *Lines) Acknowledge(err error) error {
-	if err == nil && r.messageBuffer != nil {
-		r.messageBuffer.Reset()
-		r.messageBufferIndex = 0
-	}
 	return nil
 }
 
 // CloseAsync shuts down the reader input and stops processing requests.
 func (r *Lines) CloseAsync() {
-	r.onClose()
+	go func() {
+		r.mut.Lock()
+		r.onClose(context.Background())
+		r.closeHandle()
+		r.mut.Unlock()
+	}()
 }
 
 // WaitForClose blocks until the reader input has closed down.
 func (r *Lines) WaitForClose(timeout time.Duration) error {
-	r.closeHandle()
 	return nil
 }
 

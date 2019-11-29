@@ -21,16 +21,18 @@
 package output
 
 import (
+	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/Jeffail/benthos/lib/log"
-	"github.com/Jeffail/benthos/lib/message/tracing"
-	"github.com/Jeffail/benthos/lib/metrics"
-	"github.com/Jeffail/benthos/lib/output/writer"
-	"github.com/Jeffail/benthos/lib/response"
-	"github.com/Jeffail/benthos/lib/types"
-	"github.com/Jeffail/benthos/lib/util/throttle"
+	"github.com/Jeffail/benthos/v3/lib/log"
+	"github.com/Jeffail/benthos/v3/lib/message"
+	"github.com/Jeffail/benthos/v3/lib/message/tracing"
+	"github.com/Jeffail/benthos/v3/lib/metrics"
+	"github.com/Jeffail/benthos/v3/lib/output/writer"
+	"github.com/Jeffail/benthos/v3/lib/response"
+	"github.com/Jeffail/benthos/v3/lib/types"
+	"github.com/Jeffail/benthos/v3/lib/util/throttle"
 )
 
 //------------------------------------------------------------------------------
@@ -48,8 +50,11 @@ type Writer struct {
 
 	transactions <-chan types.Transaction
 
-	closeChan  chan struct{}
-	closedChan chan struct{}
+	closeOnce      sync.Once
+	closeChan      chan struct{}
+	fullyCloseOnce sync.Once
+	fullyCloseChan chan struct{}
+	closedChan     chan struct{}
 }
 
 // NewWriter creates a new Writer output type.
@@ -60,45 +65,48 @@ func NewWriter(
 	stats metrics.Type,
 ) (Type, error) {
 	return &Writer{
-		running:      1,
-		typeStr:      typeStr,
-		writer:       w,
-		log:          log,
-		stats:        stats,
-		transactions: nil,
-		closeChan:    make(chan struct{}),
-		closedChan:   make(chan struct{}),
+		running:        1,
+		typeStr:        typeStr,
+		writer:         w,
+		log:            log,
+		stats:          stats,
+		transactions:   nil,
+		closeChan:      make(chan struct{}),
+		fullyCloseChan: make(chan struct{}),
+		closedChan:     make(chan struct{}),
 	}, nil
 }
 
 //------------------------------------------------------------------------------
 
+func (w *Writer) latencyMeasuringWrite(msg types.Message) (latencyNs int64, err error) {
+	t0 := time.Now()
+	err = w.writer.Write(msg)
+	latencyNs = time.Since(t0).Nanoseconds()
+	return latencyNs, err
+}
+
 // loop is an internal loop that brokers incoming messages to output pipe.
 func (w *Writer) loop() {
 	// Metrics paths
 	var (
-		mRunning      = w.stats.GetGauge("running")
-		mCount        = w.stats.GetCounter("count")
-		mPartsCount   = w.stats.GetCounter("parts.count")
-		mSuccess      = w.stats.GetCounter("send.success")
-		mPartsSuccess = w.stats.GetCounter("parts.send.success")
-		mError        = w.stats.GetCounter("send.error")
-		mSent         = w.stats.GetCounter("batch.sent")
-		mPartsSent    = w.stats.GetCounter("sent")
-		mConn         = w.stats.GetCounter("connection.up")
-		mFailedConn   = w.stats.GetCounter("connection.failed")
-		mLostConn     = w.stats.GetCounter("connection.lost")
+		mCount      = w.stats.GetCounter("count")
+		mPartsSent  = w.stats.GetCounter("sent")
+		mSent       = w.stats.GetCounter("batch.sent")
+		mBytesSent  = w.stats.GetCounter("batch.bytes")
+		mLatency    = w.stats.GetTimer("batch.latency")
+		mConn       = w.stats.GetCounter("connection.up")
+		mFailedConn = w.stats.GetCounter("connection.failed")
+		mLostConn   = w.stats.GetCounter("connection.lost")
 	)
 
 	defer func() {
 		err := w.writer.WaitForClose(time.Second)
 		for ; err != nil; err = w.writer.WaitForClose(time.Second) {
 		}
-		mRunning.Decr(1)
 		atomic.StoreInt32(&w.isConnected, 0)
 		close(w.closedChan)
 	}()
-	mRunning.Incr(1)
 
 	throt := throttle.New(throttle.OptCloseChan(w.closeChan))
 
@@ -130,13 +138,12 @@ func (w *Writer) loop() {
 				return
 			}
 			mCount.Incr(1)
-			mPartsCount.Incr(int64(ts.Payload.Len()))
 		case <-w.closeChan:
 			return
 		}
 
 		spans := tracing.CreateChildSpans("output_"+w.typeStr, ts.Payload)
-		err := w.writer.Write(ts.Payload)
+		latency, err := w.latencyMeasuringWrite(ts.Payload)
 
 		// If our writer says it is not connected.
 		if err == types.ErrNotConnected {
@@ -156,7 +163,7 @@ func (w *Writer) loop() {
 					if !throt.Retry() {
 						return
 					}
-				} else if err = w.writer.Write(ts.Payload); err != types.ErrNotConnected {
+				} else if latency, err = w.latencyMeasuringWrite(ts.Payload); err != types.ErrNotConnected {
 					atomic.StoreInt32(&w.isConnected, 1)
 					mConn.Incr(1)
 					break
@@ -173,15 +180,14 @@ func (w *Writer) loop() {
 
 		if err != nil {
 			w.log.Errorf("Failed to send message to %v: %v\n", w.typeStr, err)
-			mError.Incr(1)
 			if !throt.Retry() {
 				return
 			}
 		} else {
-			mSuccess.Incr(1)
-			mPartsSuccess.Incr(int64(ts.Payload.Len()))
 			mSent.Incr(1)
 			mPartsSent.Incr(int64(ts.Payload.Len()))
+			mBytesSent.Incr(int64(message.GetAllBytesLen(ts.Payload)))
+			mLatency.Timing(latency)
 			throt.Reset()
 		}
 
@@ -194,12 +200,9 @@ func (w *Writer) loop() {
 		case <-w.closeChan:
 			// The pipeline is terminating but we still want to attempt to
 			// propagate an acknowledgement from in-transit messages.
-			//
-			// TODO: Replace this timer with a value linked to our service
-			// shutdown timer.
 			select {
 			case ts.ResponseChan <- response.NewError(err):
-			case <-time.After(time.Second):
+			case <-w.fullyCloseChan:
 			}
 			return
 		}
@@ -232,6 +235,10 @@ func (w *Writer) CloseAsync() {
 
 // WaitForClose blocks until the File output has closed down.
 func (w *Writer) WaitForClose(timeout time.Duration) error {
+	go w.fullyCloseOnce.Do(func() {
+		<-time.After(timeout - time.Second)
+		close(w.fullyCloseChan)
+	})
 	select {
 	case <-w.closedChan:
 	case <-time.After(timeout):

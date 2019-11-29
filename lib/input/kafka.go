@@ -21,11 +21,11 @@
 package input
 
 import (
-	"github.com/Jeffail/benthos/lib/input/reader"
-	"github.com/Jeffail/benthos/lib/log"
-	"github.com/Jeffail/benthos/lib/metrics"
-	"github.com/Jeffail/benthos/lib/types"
-	"github.com/Jeffail/benthos/lib/util/tls"
+	"github.com/Jeffail/benthos/v3/lib/input/reader"
+	"github.com/Jeffail/benthos/v3/lib/log"
+	"github.com/Jeffail/benthos/v3/lib/metrics"
+	"github.com/Jeffail/benthos/v3/lib/types"
+	"github.com/Jeffail/benthos/v3/lib/util/tls"
 )
 
 //------------------------------------------------------------------------------
@@ -39,9 +39,16 @@ consumer group (set via config). Only one partition per input is supported, if
 you wish to balance partitions across a consumer group look at the
 ` + "`kafka_balanced`" + ` input type instead.
 
-The field ` + "`max_batch_count`" + ` specifies the maximum number of prefetched
-messages to be batched together. When more than one message is batched they can
-be split into individual messages with the ` + "`split`" + ` processor.
+Use the ` + "`batching`" + ` fields to configure an optional
+[batching policy](../batching.md#batch-policy). It is not currently possible to
+use [broker based batching](../batching.md#combined-batching) with this input
+type.
+
+This input currently provides a single continuous feed of data, and therefore
+by default will only utilise a single processing thread and parallel output.
+Take a look at the
+[pipelines documentation](../pipeline.md#single-consumer-without-buffer) for
+guides on how to work around this.
 
 The field ` + "`max_processing_period`" + ` should be set above the maximum
 estimated time taken to process a message.
@@ -73,6 +80,9 @@ message offset.
 
 You can access these metadata fields using
 [function interpolation](../config_interpolation.md#metadata).`,
+		sanitiseConfigFunc: func(conf Config) (interface{}, error) {
+			return sanitiseWithBatch(conf.Kafka, conf.Kafka.Batching)
+		},
 	}
 }
 
@@ -80,11 +90,22 @@ You can access these metadata fields using
 
 // NewKafka creates a new Kafka input type.
 func NewKafka(conf Config, mgr types.Manager, log log.Modular, stats metrics.Type) (Type, error) {
+	// TODO: V4 Remove this.
+	if conf.Kafka.MaxBatchCount > 1 {
+		log.Warnf("Field '%v.max_batch_count' is deprecated, use '%v.batching.count' instead.\n", conf.Type, conf.Type)
+		conf.Kafka.Batching.Count = conf.Kafka.MaxBatchCount
+	}
 	k, err := reader.NewKafka(conf.Kafka, log, stats)
 	if err != nil {
 		return nil, err
 	}
-	return NewReader("kafka", reader.NewPreserver(k), log, stats)
+	var kb reader.Type = k
+	if !conf.Kafka.Batching.IsNoop() {
+		if kb, err = reader.NewSyncBatcher(conf.Kafka.Batching, k, mgr, log, stats); err != nil {
+			return nil, err
+		}
+	}
+	return NewReader(TypeKafka, reader.NewPreserver(kb), log, stats)
 }
 
 //------------------------------------------------------------------------------

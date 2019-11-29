@@ -27,10 +27,11 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/Jeffail/benthos/lib/broker"
-	"github.com/Jeffail/benthos/lib/log"
-	"github.com/Jeffail/benthos/lib/metrics"
-	"github.com/Jeffail/benthos/lib/types"
+	"github.com/Jeffail/benthos/v3/lib/broker"
+	"github.com/Jeffail/benthos/v3/lib/log"
+	"github.com/Jeffail/benthos/v3/lib/message/batch"
+	"github.com/Jeffail/benthos/v3/lib/metrics"
+	"github.com/Jeffail/benthos/v3/lib/types"
 	"gopkg.in/yaml.v3"
 )
 
@@ -45,7 +46,8 @@ var (
 
 func init() {
 	Constructors[TypeBroker] = TypeSpec{
-		brokerConstructor: NewBroker,
+		brokerConstructor:                  NewBroker,
+		brokerConstructorHasBatchProcessor: newBrokerHasBatchProcessor,
 		description: `
 The broker type allows you to combine multiple inputs, where each input will be
 read in parallel. A broker type is configured with its own list of input
@@ -77,6 +79,13 @@ If the number of copies is greater than zero the list will be copied that number
 of times. For example, if your inputs were of type foo and bar, with 'copies'
 set to '2', you would end up with two 'foo' inputs and two 'bar' inputs.
 
+### Batching
+
+It's possible to configure a [batch policy](../batching.md#batch-policy) with a
+broker using the ` + "`batching`" + ` fields. When doing this the feeds from all
+child inputs are combined. Some inputs do not support broker based batching and
+specify this in their documentation.
+
 ### Processors
 
 It is possible to configure [processors](../processors/README.md) at the broker
@@ -94,9 +103,14 @@ nodes processors.`,
 				}
 				inSlice = append(inSlice, sanInput)
 			}
+			var batchSanit interface{}
+			if batchSanit, err = batch.SanitisePolicyConfig(conf.Broker.Batching); err != nil {
+				return nil, err
+			}
 			return map[string]interface{}{
-				"copies": conf.Broker.Copies,
-				"inputs": inSlice,
+				"copies":   conf.Broker.Copies,
+				"inputs":   inSlice,
+				"batching": batchSanit,
 			}, nil
 		},
 	}
@@ -106,15 +120,19 @@ nodes processors.`,
 
 // BrokerConfig contains configuration fields for the Broker input type.
 type BrokerConfig struct {
-	Copies int             `json:"copies" yaml:"copies"`
-	Inputs brokerInputList `json:"inputs" yaml:"inputs"`
+	Copies   int                `json:"copies" yaml:"copies"`
+	Inputs   brokerInputList    `json:"inputs" yaml:"inputs"`
+	Batching batch.PolicyConfig `json:"batching" yaml:"batching"`
 }
 
 // NewBrokerConfig creates a new BrokerConfig with default values.
 func NewBrokerConfig() BrokerConfig {
+	batching := batch.NewPolicyConfig()
+	batching.Count = 1
 	return BrokerConfig{
-		Copies: 1,
-		Inputs: brokerInputList{},
+		Copies:   1,
+		Inputs:   brokerInputList{},
+		Batching: batching,
 	}
 }
 
@@ -227,13 +245,26 @@ func NewBroker(
 	stats metrics.Type,
 	pipelines ...types.PipelineConstructorFunc,
 ) (Type, error) {
+	return newBrokerHasBatchProcessor(false, conf, mgr, log, stats, pipelines...)
+}
+
+// DEPRECATED: This is a hack for until the batch processor is removed.
+// TODO: V4 Remove this.
+func newBrokerHasBatchProcessor(
+	hasBatchProc bool,
+	conf Config,
+	mgr types.Manager,
+	log log.Modular,
+	stats metrics.Type,
+	pipelines ...types.PipelineConstructorFunc,
+) (Type, error) {
 	lInputs := len(conf.Broker.Inputs) * conf.Broker.Copies
 
 	if lInputs <= 0 {
 		return nil, ErrBrokerNoInputs
 	}
 	if lInputs == 1 {
-		return New(conf.Broker.Inputs[0], mgr, log, stats, pipelines...)
+		return newHasBatchProcessor(hasBatchProc, conf.Broker.Inputs[0], mgr, log, stats, pipelines...)
 	}
 
 	inputs := make([]types.Producer, lInputs)
@@ -242,7 +273,8 @@ func NewBroker(
 	for j := 0; j < conf.Broker.Copies; j++ {
 		for i, iConf := range conf.Broker.Inputs {
 			ns := fmt.Sprintf("broker.inputs.%v", i)
-			inputs[len(conf.Broker.Inputs)*j+i], err = New(
+			inputs[len(conf.Broker.Inputs)*j+i], err = newHasBatchProcessor(
+				hasBatchProc,
 				iConf, mgr,
 				log.NewModule("."+ns),
 				metrics.Combine(stats, metrics.Namespaced(stats, ns)),
@@ -254,7 +286,21 @@ func NewBroker(
 		}
 	}
 
-	return broker.NewFanIn(inputs, stats)
+	var b Type
+	if b, err = broker.NewFanIn(inputs, stats); err != nil {
+		return nil, err
+	}
+
+	if conf.Broker.Batching.IsNoop() {
+		return b, nil
+	}
+
+	policy, err := batch.NewPolicy(conf.Broker.Batching, mgr, log.NewModule(".batching"), metrics.Namespaced(stats, "batching"))
+	if err != nil {
+		return nil, fmt.Errorf("failed to construct batch policy: %v", err)
+	}
+
+	return NewBatcher(policy, b, log, stats), nil
 }
 
 //------------------------------------------------------------------------------

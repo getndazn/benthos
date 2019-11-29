@@ -26,12 +26,12 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/Jeffail/benthos/lib/log"
-	"github.com/Jeffail/benthos/lib/message"
-	"github.com/Jeffail/benthos/lib/metrics"
-	"github.com/Jeffail/benthos/lib/types"
-	sess "github.com/Jeffail/benthos/lib/util/aws/session"
-	"github.com/Jeffail/benthos/lib/util/text"
+	"github.com/Jeffail/benthos/v3/lib/log"
+	"github.com/Jeffail/benthos/v3/lib/message"
+	"github.com/Jeffail/benthos/v3/lib/metrics"
+	"github.com/Jeffail/benthos/v3/lib/types"
+	sess "github.com/Jeffail/benthos/v3/lib/util/aws/session"
+	"github.com/Jeffail/benthos/v3/lib/util/text"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3/s3manager"
@@ -48,6 +48,7 @@ type AmazonS3Config struct {
 	ContentType        string `json:"content_type" yaml:"content_type"`
 	ContentEncoding    string `json:"content_encoding" yaml:"content_encoding"`
 	Timeout            string `json:"timeout" yaml:"timeout"`
+	KMSKeyID           string `json:"kms_key_id" yaml:"kms_key_id"`
 }
 
 // NewAmazonS3Config creates a new Config with default values.
@@ -60,6 +61,7 @@ func NewAmazonS3Config() AmazonS3Config {
 		ContentType:        "application/octet-stream",
 		ContentEncoding:    "",
 		Timeout:            "5s",
+		KMSKeyID:           "",
 	}
 }
 
@@ -151,14 +153,21 @@ func (a *AmazonS3) Write(msg types.Message) error {
 			contentEncoding = aws.String(ce)
 		}
 
-		if _, err := a.uploader.UploadWithContext(ctx, &s3manager.UploadInput{
+		uploadInput := &s3manager.UploadInput{
 			Bucket:          &a.conf.Bucket,
 			Key:             aws.String(a.path.Get(lMsg)),
 			Body:            bytes.NewReader(p.Get()),
 			ContentType:     aws.String(a.contentType.Get(lMsg)),
 			ContentEncoding: contentEncoding,
 			Metadata:        metadata,
-		}); err != nil {
+		}
+
+		if a.conf.KMSKeyID != "" {
+			uploadInput.ServerSideEncryption = aws.String("aws:kms")
+			uploadInput.SSEKMSKeyId = &a.conf.KMSKeyID
+		}
+
+		if _, err := a.uploader.UploadWithContext(ctx, uploadInput); err != nil {
 			return err
 		}
 		return nil

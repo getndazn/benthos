@@ -21,10 +21,10 @@
 package output
 
 import (
-	"github.com/Jeffail/benthos/lib/log"
-	"github.com/Jeffail/benthos/lib/metrics"
-	"github.com/Jeffail/benthos/lib/output/writer"
-	"github.com/Jeffail/benthos/lib/types"
+	"github.com/Jeffail/benthos/v3/lib/log"
+	"github.com/Jeffail/benthos/v3/lib/metrics"
+	"github.com/Jeffail/benthos/v3/lib/output/writer"
+	"github.com/Jeffail/benthos/v3/lib/types"
 )
 
 //------------------------------------------------------------------------------
@@ -54,7 +54,7 @@ redis_hash:
 
 If the field ` + "`walk_metadata`" + ` is set to ` + "`true`" + ` then Benthos
 will walk all metadata fields of messages and add them to the list of hash
-fields to set. 
+fields to set.
 
 If the field ` + "`walk_json_object`" + ` is set to ` + "`true`" + ` then
 Benthos will walk each message as a JSON object, extracting keys and the string

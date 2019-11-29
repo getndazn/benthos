@@ -28,10 +28,10 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/Jeffail/benthos/lib/log"
-	"github.com/Jeffail/benthos/lib/metrics"
-	"github.com/Jeffail/benthos/lib/types"
-	"github.com/Jeffail/benthos/lib/util/text"
+	"github.com/Jeffail/benthos/v3/lib/log"
+	"github.com/Jeffail/benthos/v3/lib/metrics"
+	"github.com/Jeffail/benthos/v3/lib/types"
+	"github.com/Jeffail/benthos/v3/lib/util/text"
 	"github.com/microcosm-cc/bluemonday"
 	"github.com/opentracing/opentracing-go"
 )
@@ -84,6 +84,39 @@ Prepends text to the beginning of the payload.
 
 Returns a doubled-quoted string, using escape sequences (\t, \n, \xFF, \u0100)
 for control characters and other non-printable characters.
+
+#### ` + "`regexp_expand`" + `
+
+Expands each matched occurrence of the argument regular expression according to
+a template specified with the ` + "`value`" + ` field, and replaces the message
+with the aggregated results.
+
+Inside the template $ signs are interpreted as submatch expansions, e.g. $1
+represents the text of the first submatch.
+
+For example, given the following config:
+
+` + "```yaml" + `
+  - text:
+      operator: regexp_expand
+      arg: "(?m)(?P<key>\\w+):\\s+(?P<value>\\w+)$"
+      value: "$key=$value\n"
+` + "```" + `
+
+And a message containing:
+
+` + "```text" + `
+option1: value1
+# comment line
+option2: value2
+` + "```" + `
+
+The resulting payload would be:
+
+` + "```text" + `
+option1=value1
+option2=value2
+` + "```" + `
 
 #### ` + "`replace`" + `
 
@@ -154,7 +187,7 @@ func newTextAppendOperator() textOperator {
 		if len(value) == 0 {
 			return body, nil
 		}
-		return append(body[:], value...), nil
+		return append(body[:len(body):len(body)], value...), nil
 	}
 }
 
@@ -179,7 +212,7 @@ func newTextPrependOperator() textOperator {
 		if len(value) == 0 {
 			return body, nil
 		}
-		return append(value[:], body...), nil
+		return append(value[:len(value):len(value)], body...), nil
 	}
 }
 
@@ -217,6 +250,20 @@ func newTextSetOperator() textOperator {
 	return func(body []byte, value []byte) ([]byte, error) {
 		return value, nil
 	}
+}
+
+func newTextRegexpExpandOperator(arg string) (textOperator, error) {
+	rp, err := regexp.Compile(arg)
+	if err != nil {
+		return nil, err
+	}
+	return func(body []byte, value []byte) ([]byte, error) {
+		var result []byte
+		for _, submatches := range rp.FindAllSubmatchIndex(body, -1) {
+			result = rp.Expand(result, value, body, submatches)
+		}
+		return result, nil
+	}, nil
 }
 
 func newTextReplaceOperator(arg string) textOperator {
@@ -277,6 +324,8 @@ func getTextOperator(opStr string, arg string) (textOperator, error) {
 		return newTextPrependOperator(), nil
 	case "quote":
 		return newTextQuoteOperator(), nil
+	case "regexp_expand":
+		return newTextRegexpExpandOperator(arg)
 	case "replace":
 		return newTextReplaceOperator(arg), nil
 	case "replace_regexp":

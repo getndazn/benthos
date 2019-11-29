@@ -21,15 +21,16 @@
 package reader
 
 import (
+	"context"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/Jeffail/benthos/lib/log"
-	"github.com/Jeffail/benthos/lib/message"
-	"github.com/Jeffail/benthos/lib/metrics"
-	"github.com/Jeffail/benthos/lib/types"
+	"github.com/Jeffail/benthos/v3/lib/log"
+	"github.com/Jeffail/benthos/v3/lib/message"
+	"github.com/Jeffail/benthos/v3/lib/metrics"
+	"github.com/Jeffail/benthos/v3/lib/types"
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 )
 
@@ -42,6 +43,8 @@ type MQTTConfig struct {
 	Topics       []string `json:"topics" yaml:"topics"`
 	ClientID     string   `json:"client_id" yaml:"client_id"`
 	CleanSession bool     `json:"clean_session" yaml:"clean_session"`
+	User         string   `json:"user" yaml:"user"`
+	Password     string   `json:"password" yaml:"password"`
 }
 
 // NewMQTTConfig creates a new MQTTConfig with default values.
@@ -52,6 +55,8 @@ func NewMQTTConfig() MQTTConfig {
 		Topics:       []string{"benthos_topic"},
 		ClientID:     "benthos_input",
 		CleanSession: true,
+		User:         "",
+		Password:     "",
 	}
 }
 
@@ -100,6 +105,11 @@ func NewMQTT(
 
 // Connect establishes a connection to an MQTT server.
 func (m *MQTT) Connect() error {
+	return m.ConnectWithContext(context.Background())
+}
+
+// ConnectWithContext establishes a connection to an MQTT server.
+func (m *MQTT) ConnectWithContext(ctx context.Context) error {
 	m.cMut.Lock()
 	defer m.cMut.Unlock()
 
@@ -120,6 +130,14 @@ func (m *MQTT) Connect() error {
 				}
 			}
 		})
+
+	if m.conf.User != "" {
+		conf.SetUsername(m.conf.User)
+	}
+
+	if m.conf.Password != "" {
+		conf.SetPassword(m.conf.Password)
+	}
 
 	for _, u := range m.urls {
 		conf = conf.AddBroker(u)
@@ -144,8 +162,8 @@ func (m *MQTT) msgHandler(c mqtt.Client, msg mqtt.Message) {
 	}
 }
 
-// Read attempts to read a new message from an MQTT broker.
-func (m *MQTT) Read() (types.Message, error) {
+// ReadWithContext attempts to read a new message from an MQTT broker.
+func (m *MQTT) ReadWithContext(ctx context.Context) (types.Message, AsyncAckFn, error) {
 	select {
 	case msg := <-m.msgChan:
 		message := message.New([][]byte{[]byte(msg.Payload())})
@@ -157,10 +175,18 @@ func (m *MQTT) Read() (types.Message, error) {
 		meta.Set("mqtt_topic", string(msg.Topic()))
 		meta.Set("mqtt_message_id", strconv.Itoa(int(msg.MessageID())))
 
-		return message, nil
+		return message, noopAsyncAckFn, nil
+	case <-ctx.Done():
 	case <-m.interruptChan:
+		return nil, nil, types.ErrTypeClosed
 	}
-	return nil, types.ErrTypeClosed
+	return nil, nil, types.ErrTimeout
+}
+
+// Read attempts to read a new message from an MQTT broker.
+func (m *MQTT) Read() (types.Message, error) {
+	msg, _, err := m.ReadWithContext(context.Background())
+	return msg, err
 }
 
 // Acknowledge instructs whether messages have been successfully propagated.

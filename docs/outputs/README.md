@@ -30,7 +30,7 @@ until the issue is resolved.
 When a Benthos output fails to send a message the error is propagated back up to
 the input, where depending on the protocol it will either be pushed back to the
 source as a Noack (AMQP) or will be reattempted indefinitely with the commit
-witheld until success (Kafka).
+withheld until success (Kafka).
 
 It's possible to instead have Benthos indefinitely retry an output until success
 with a [`retry`](#retry) output. Some other outputs, such as the
@@ -58,45 +58,74 @@ a [`broker`](#broker) output with the 'try' pattern.
 ### Contents
 
 1. [`amqp`](#amqp)
-2. [`broker`](#broker)
-3. [`cache`](#cache)
-4. [`drop`](#drop)
-5. [`drop_on_error`](#drop_on_error)
-6. [`dynamic`](#dynamic)
-7. [`dynamodb`](#dynamodb)
-8. [`elasticsearch`](#elasticsearch)
-9. [`file`](#file)
-10. [`files`](#files)
-11. [`gcp_pubsub`](#gcp_pubsub)
-12. [`hdfs`](#hdfs)
-13. [`http_client`](#http_client)
-14. [`http_server`](#http_server)
-15. [`inproc`](#inproc)
-16. [`kafka`](#kafka)
-17. [`kinesis`](#kinesis)
-18. [`mqtt`](#mqtt)
-19. [`nanomsg`](#nanomsg)
-20. [`nats`](#nats)
-21. [`nats_stream`](#nats_stream)
-22. [`nsq`](#nsq)
-23. [`redis_hash`](#redis_hash)
-24. [`redis_list`](#redis_list)
-25. [`redis_pubsub`](#redis_pubsub)
-26. [`redis_streams`](#redis_streams)
-27. [`retry`](#retry)
-28. [`s3`](#s3)
-29. [`sns`](#sns)
-30. [`sqs`](#sqs)
-31. [`stdout`](#stdout)
-32. [`switch`](#switch)
-33. [`sync_response`](#sync_response)
-34. [`websocket`](#websocket)
+2. [`amqp_0_9`](#amqp_0_9)
+3. [`broker`](#broker)
+4. [`cache`](#cache)
+5. [`drop`](#drop)
+6. [`drop_on_error`](#drop_on_error)
+7. [`dynamic`](#dynamic)
+8. [`dynamodb`](#dynamodb)
+9. [`elasticsearch`](#elasticsearch)
+10. [`file`](#file)
+11. [`files`](#files)
+12. [`gcp_pubsub`](#gcp_pubsub)
+13. [`hdfs`](#hdfs)
+14. [`http_client`](#http_client)
+15. [`http_server`](#http_server)
+16. [`inproc`](#inproc)
+17. [`kafka`](#kafka)
+18. [`kinesis`](#kinesis)
+19. [`kinesis_firehose`](#kinesis_firehose)
+20. [`mqtt`](#mqtt)
+21. [`nanomsg`](#nanomsg)
+22. [`nats`](#nats)
+23. [`nats_stream`](#nats_stream)
+24. [`nsq`](#nsq)
+25. [`redis_hash`](#redis_hash)
+26. [`redis_list`](#redis_list)
+27. [`redis_pubsub`](#redis_pubsub)
+28. [`redis_streams`](#redis_streams)
+29. [`retry`](#retry)
+30. [`s3`](#s3)
+31. [`sns`](#sns)
+32. [`sqs`](#sqs)
+33. [`stdout`](#stdout)
+34. [`switch`](#switch)
+35. [`sync_response`](#sync_response)
+36. [`tcp`](#tcp)
+37. [`udp`](#udp)
+38. [`websocket`](#websocket)
 
 ## `amqp`
 
 ``` yaml
 type: amqp
 amqp:
+  exchange: benthos-exchange
+  exchange_declare:
+    durable: true
+    enabled: false
+    type: direct
+  immediate: false
+  key: benthos-key
+  mandatory: false
+  persistent: false
+  tls:
+    client_certs: []
+    enabled: false
+    root_cas_file: ""
+    skip_cert_verify: false
+  url: amqp://guest:guest@localhost:5672/
+```
+
+DEPRECATED: This output is deprecated and scheduled for removal in Benthos V4.
+Please use [`amqp_0_9`](#amqp_0_9) instead.
+
+## `amqp_0_9`
+
+``` yaml
+type: amqp_0_9
+amqp_0_9:
   exchange: benthos-exchange
   exchange_declare:
     durable: true
@@ -135,6 +164,13 @@ The field 'key' can be dynamically set using function interpolations described
 ``` yaml
 type: broker
 broker:
+  batching:
+    byte_size: 0
+    condition:
+      type: static
+      static: false
+    count: 1
+    period: ""
   copies: 1
   outputs: []
   pattern: fan_out
@@ -207,6 +243,13 @@ This pattern is useful for triggering events in the case where certain output
 targets have broken. For example, if you had an output type `http_client`
 but wished to reroute messages whenever the endpoint becomes unreachable you
 could use a try broker.
+
+### Batching
+
+It's possible to configure a [batch policy](../batching.md#batch-policy) with a
+broker using the `batching` fields, allowing you to create batches
+after your processing stages. Some inputs do not support broker based batching
+and specify this in their documentation.
 
 ### Utilising More Outputs
 
@@ -363,9 +406,10 @@ string_columns:
 ```
 
 The field `json_map_columns` is a map of column names to json paths,
-where the path is extracted from each document and converted into a map value.
-Both an empty path and the path `.` are interpreted as the root of the
-document. This allows you to populate map columns of an item like follows:
+where the [dot path](../field_paths.md) is extracted from each document and
+converted into a map value. Both an empty path and the path `.` are
+interpreted as the root of the document. This allows you to populate map columns
+of an item like follows:
 
 ``` yaml
 json_map_columns:
@@ -415,6 +459,7 @@ elasticsearch:
     enabled: false
     password: ""
     username: ""
+  healthcheck: true
   id: ${!count:elastic_ids}-${!timestamp_unix}
   index: benthos_index
   max_retries: 0
@@ -426,8 +471,8 @@ elasticsearch:
   - http://localhost:9200
 ```
 
-Publishes messages into an Elasticsearch index. This output currently does not
-support creating the target index.
+Publishes messages into an Elasticsearch index. If the index does not exist then
+it is created with a dynamic mapping.
 
 Both the `id` and `index` fields can be dynamically set using function
 interpolations described [here](../config_interpolation.md#functions). When
@@ -439,6 +484,9 @@ By default Benthos will use a shared credentials file when connecting to AWS
 services. It's also possible to set them explicitly at the component level,
 allowing you to transfer data across accounts. You can find out more
 [in this document](../aws.md).
+
+If the configured target is a managed AWS Elasticsearch cluster, you may need
+to set `sniff` and `healthcheck` to false for connections to succeed.
 
 ## `file`
 
@@ -619,10 +667,15 @@ kafka:
   ack_replicas: false
   addresses:
   - localhost:9092
+  backoff:
+    initial_interval: 0s
+    max_elapsed_time: 5s
+    max_interval: 1s
   client_id: benthos_kafka_output
   compression: none
   key: ""
   max_msg_bytes: 1e+06
+  max_retries: 0
   round_robin_partitions: false
   sasl:
     enabled: false
@@ -715,19 +768,56 @@ services. It's also possible to set them explicitly at the component level,
 allowing you to transfer data across accounts. You can find out more
 [in this document](../aws.md).
 
+## `kinesis_firehose`
+
+``` yaml
+type: kinesis_firehose
+kinesis_firehose:
+  backoff:
+    initial_interval: 1s
+    max_elapsed_time: 30s
+    max_interval: 5s
+  credentials:
+    id: ""
+    profile: ""
+    role: ""
+    role_external_id: ""
+    secret: ""
+    token: ""
+  endpoint: ""
+  max_retries: 0
+  region: eu-west-1
+  stream: ""
+```
+
+Sends messages to a Kinesis Firehose delivery stream.
+
+### Credentials
+
+By default Benthos will use a shared credentials file when connecting to AWS
+services. It's also possible to set them explicitly at the component level,
+allowing you to transfer data across accounts. You can find out more
+[in this document](../aws.md).
+
 ## `mqtt`
 
 ``` yaml
 type: mqtt
 mqtt:
   client_id: benthos_output
+  password: ""
   qos: 1
   topic: benthos_topic
   urls:
   - tcp://localhost:1883
+  user: ""
 ```
 
 Pushes messages to an MQTT broker.
+
+The `topic` field can be dynamically set using function interpolations
+described [here](../config_interpolation.md#functions). When sending batched
+messages these interpolations are performed per message part.
 
 ## `nanomsg`
 
@@ -753,7 +843,7 @@ type: nats
 nats:
   subject: benthos_messages
   urls:
-  - nats://localhost:4222
+  - nats://127.0.0.1:4222
 ```
 
 Publish to an NATS subject. NATS is at-most-once, so delivery is not guaranteed.
@@ -824,7 +914,7 @@ redis_hash:
 
 If the field `walk_metadata` is set to `true` then Benthos
 will walk all metadata fields of messages and add them to the list of hash
-fields to set. 
+fields to set.
 
 If the field `walk_json_object` is set to `true` then
 Benthos will walk each message as a JSON object, extracting keys and the string
@@ -933,6 +1023,7 @@ s3:
     token: ""
   endpoint: ""
   force_path_style_urls: false
+  kms_key_id: ""
   path: ${!count:files}-${!timestamp_unix_nano}.txt
   region: eu-west-1
   timeout: 5s
@@ -1000,11 +1091,21 @@ sqs:
     token: ""
   endpoint: ""
   max_retries: 0
+  message_deduplication_id: ""
+  message_group_id: ""
   region: eu-west-1
   url: ""
 ```
 
-Sends messages to an SQS queue.
+Sends messages to an SQS queue. Metadata values are sent along with the payload
+as attributes with the data type String. If the number of metadata values in a
+message exceeds the message attribute limit (10) then the top ten keys ordered
+alphabetically will be selected.
+
+The fields `message_group_id` and `message_deduplication_id` can be
+set dynamically using
+[function interpolations](../config_interpolation.md#functions), which are
+resolved individually for each message of a batch.
 
 ### Credentials
 
@@ -1140,6 +1241,34 @@ Using the above example and posting the message 'hello world' to the endpoint
 `foo_topic` and also respond with 'HELLO WORLD'.
 
 For more information please read [Synchronous Responses](../sync_responses.md).
+
+## `tcp`
+
+``` yaml
+type: tcp
+tcp:
+  address: localhost:4194
+```
+
+Sends messages as a continuous stream of line delimited data over TCP by
+connecting to a server.
+
+If batched messages are sent the final message of the batch will be followed by
+two line breaks in order to indicate the end of the batch.
+
+## `udp`
+
+``` yaml
+type: udp
+udp:
+  address: localhost:4194
+```
+
+Sends messages as a continuous stream of line delimited data over UDP by
+connecting to a server.
+
+If batched messages are sent the final message of the batch will be followed by
+two line breaks in order to indicate the end of the batch.
 
 ## `websocket`
 

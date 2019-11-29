@@ -27,10 +27,10 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/Jeffail/benthos/lib/log"
-	"github.com/Jeffail/benthos/lib/metrics"
-	"github.com/Jeffail/benthos/lib/types"
-	"github.com/Jeffail/benthos/lib/util/config"
+	"github.com/Jeffail/benthos/v3/lib/log"
+	"github.com/Jeffail/benthos/v3/lib/metrics"
+	"github.com/Jeffail/benthos/v3/lib/types"
+	"github.com/Jeffail/benthos/v3/lib/util/config"
 	yaml "gopkg.in/yaml.v3"
 )
 
@@ -104,6 +104,7 @@ const (
 	TypeInsertPart   = "insert_part"
 	TypeJMESPath     = "jmespath"
 	TypeJSON         = "json"
+	TypeJSONSchema   = "json_schema"
 	TypeLambda       = "lambda"
 	TypeLog          = "log"
 	TypeMergeJSON    = "merge_json"
@@ -116,6 +117,9 @@ const (
 	TypeProcessDAG   = "process_dag"
 	TypeProcessField = "process_field"
 	TypeProcessMap   = "process_map"
+	TypeRateLimit    = "rate_limit"
+	TypeRedis        = "redis"
+	TypeResource     = "resource"
 	TypeSample       = "sample"
 	TypeSelectParts  = "select_parts"
 	TypeSleep        = "sleep"
@@ -128,6 +132,8 @@ const (
 	TypeThrottle     = "throttle"
 	TypeUnarchive    = "unarchive"
 	TypeWhile        = "while"
+	TypeWorkflow     = "workflow"
+	TypeXML          = "xml"
 )
 
 //------------------------------------------------------------------------------
@@ -160,6 +166,7 @@ type Config struct {
 	InsertPart   InsertPartConfig   `json:"insert_part" yaml:"insert_part"`
 	JMESPath     JMESPathConfig     `json:"jmespath" yaml:"jmespath"`
 	JSON         JSONConfig         `json:"json" yaml:"json"`
+	JSONSchema   JSONSchemaConfig   `json:"json_schema" yaml:"json_schema"`
 	Lambda       LambdaConfig       `json:"lambda" yaml:"lambda"`
 	Log          LogConfig          `json:"log" yaml:"log"`
 	MergeJSON    MergeJSONConfig    `json:"merge_json" yaml:"merge_json"`
@@ -172,6 +179,9 @@ type Config struct {
 	ProcessDAG   ProcessDAGConfig   `json:"process_dag" yaml:"process_dag"`
 	ProcessField ProcessFieldConfig `json:"process_field" yaml:"process_field"`
 	ProcessMap   ProcessMapConfig   `json:"process_map" yaml:"process_map"`
+	RateLimit    RateLimitConfig    `json:"rate_limit" yaml:"rate_limit"`
+	Redis        RedisConfig        `json:"redis" yaml:"redis"`
+	Resource     string             `json:"resource" yaml:"resource"`
 	Sample       SampleConfig       `json:"sample" yaml:"sample"`
 	SelectParts  SelectPartsConfig  `json:"select_parts" yaml:"select_parts"`
 	Sleep        SleepConfig        `json:"sleep" yaml:"sleep"`
@@ -184,6 +194,8 @@ type Config struct {
 	Throttle     ThrottleConfig     `json:"throttle" yaml:"throttle"`
 	Unarchive    UnarchiveConfig    `json:"unarchive" yaml:"unarchive"`
 	While        WhileConfig        `json:"while" yaml:"while"`
+	Workflow     WorkflowConfig     `json:"workflow" yaml:"workflow"`
+	XML          XMLConfig          `json:"xml" yaml:"xml"`
 }
 
 // NewConfig returns a configuration struct fully populated with default values.
@@ -215,6 +227,7 @@ func NewConfig() Config {
 		InsertPart:   NewInsertPartConfig(),
 		JMESPath:     NewJMESPathConfig(),
 		JSON:         NewJSONConfig(),
+		JSONSchema:   NewJSONSchemaConfig(),
 		Lambda:       NewLambdaConfig(),
 		Log:          NewLogConfig(),
 		MergeJSON:    NewMergeJSONConfig(),
@@ -227,6 +240,9 @@ func NewConfig() Config {
 		ProcessDAG:   NewProcessDAGConfig(),
 		ProcessField: NewProcessFieldConfig(),
 		ProcessMap:   NewProcessMapConfig(),
+		RateLimit:    NewRateLimitConfig(),
+		Redis:        NewRedisConfig(),
+		Resource:     "",
 		Sample:       NewSampleConfig(),
 		SelectParts:  NewSelectPartsConfig(),
 		Sleep:        NewSleepConfig(),
@@ -239,6 +255,8 @@ func NewConfig() Config {
 		Throttle:     NewThrottleConfig(),
 		Unarchive:    NewUnarchiveConfig(),
 		While:        NewWhileConfig(),
+		Workflow:     NewWorkflowConfig(),
+		XML:          NewXMLConfig(),
 	}
 }
 

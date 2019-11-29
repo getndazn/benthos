@@ -21,10 +21,10 @@
 package input
 
 import (
-	"github.com/Jeffail/benthos/lib/input/reader"
-	"github.com/Jeffail/benthos/lib/log"
-	"github.com/Jeffail/benthos/lib/metrics"
-	"github.com/Jeffail/benthos/lib/types"
+	"github.com/Jeffail/benthos/v3/lib/input/reader"
+	"github.com/Jeffail/benthos/v3/lib/log"
+	"github.com/Jeffail/benthos/v3/lib/metrics"
+	"github.com/Jeffail/benthos/v3/lib/types"
 )
 
 //------------------------------------------------------------------------------
@@ -33,7 +33,11 @@ func init() {
 	Constructors[TypeRedisList] = TypeSpec{
 		constructor: NewRedisList,
 		description: `
-Pops messages from the beginning of a Redis list using the BLPop command.`,
+Pops messages from the beginning of a Redis list using the BLPop command.
+
+Messages consumed by this input can be processed in parallel, meaning a single
+instance of this input can utilise any number of threads within a
+` + "`pipeline`" + ` section of a config.`,
 	}
 }
 
@@ -45,7 +49,7 @@ func NewRedisList(conf Config, mgr types.Manager, log log.Modular, stats metrics
 	if err != nil {
 		return nil, err
 	}
-	return NewReader("redis_list", reader.NewPreserver(r), log, stats)
+	return NewAsyncReader(TypeRedisList, true, reader.NewAsyncPreserver(r), log, stats)
 }
 
 //------------------------------------------------------------------------------

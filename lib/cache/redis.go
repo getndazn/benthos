@@ -25,9 +25,9 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/Jeffail/benthos/lib/log"
-	"github.com/Jeffail/benthos/lib/metrics"
-	"github.com/Jeffail/benthos/lib/types"
+	"github.com/Jeffail/benthos/v3/lib/log"
+	"github.com/Jeffail/benthos/v3/lib/metrics"
+	"github.com/Jeffail/benthos/v3/lib/types"
 	"github.com/go-redis/redis"
 )
 
@@ -342,6 +342,7 @@ func (r *Redis) CloseAsync() {
 
 // WaitForClose blocks until the cache has closed down.
 func (r *Redis) WaitForClose(timeout time.Duration) error {
+	r.client.Close()
 	return nil
 }
 

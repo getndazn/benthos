@@ -21,16 +21,18 @@
 package reader
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/Jeffail/benthos/lib/log"
-	"github.com/Jeffail/benthos/lib/message"
-	"github.com/Jeffail/benthos/lib/metrics"
-	"github.com/Jeffail/benthos/lib/types"
+	"github.com/Jeffail/benthos/v3/lib/log"
+	"github.com/Jeffail/benthos/v3/lib/message"
+	"github.com/Jeffail/benthos/v3/lib/message/batch"
+	"github.com/Jeffail/benthos/v3/lib/metrics"
+	"github.com/Jeffail/benthos/v3/lib/types"
 	"github.com/go-redis/redis"
 )
 
@@ -39,19 +41,22 @@ import (
 // RedisStreamsConfig contains configuration fields for the RedisStreams input
 // type.
 type RedisStreamsConfig struct {
-	URL             string   `json:"url" yaml:"url"`
-	BodyKey         string   `json:"body_key" yaml:"body_key"`
-	Streams         []string `json:"streams" yaml:"streams"`
-	ConsumerGroup   string   `json:"consumer_group" yaml:"consumer_group"`
-	ClientID        string   `json:"client_id" yaml:"client_id"`
-	Limit           int64    `json:"limit" yaml:"limit"`
-	StartFromOldest bool     `json:"start_from_oldest" yaml:"start_from_oldest"`
-	CommitPeriod    string   `json:"commit_period" yaml:"commit_period"`
-	Timeout         string   `json:"timeout" yaml:"timeout"`
+	URL             string             `json:"url" yaml:"url"`
+	BodyKey         string             `json:"body_key" yaml:"body_key"`
+	Streams         []string           `json:"streams" yaml:"streams"`
+	ConsumerGroup   string             `json:"consumer_group" yaml:"consumer_group"`
+	ClientID        string             `json:"client_id" yaml:"client_id"`
+	Limit           int64              `json:"limit" yaml:"limit"`
+	Batching        batch.PolicyConfig `json:"batching" yaml:"batching"`
+	StartFromOldest bool               `json:"start_from_oldest" yaml:"start_from_oldest"`
+	CommitPeriod    string             `json:"commit_period" yaml:"commit_period"`
+	Timeout         string             `json:"timeout" yaml:"timeout"`
 }
 
 // NewRedisStreamsConfig creates a new RedisStreamsConfig with default values.
 func NewRedisStreamsConfig() RedisStreamsConfig {
+	batchConf := batch.NewPolicyConfig()
+	batchConf.Count = 1
 	return RedisStreamsConfig{
 		URL:             "tcp://localhost:6379",
 		BodyKey:         "body",
@@ -59,6 +64,7 @@ func NewRedisStreamsConfig() RedisStreamsConfig {
 		ConsumerGroup:   "benthos_group",
 		ClientID:        "benthos_consumer",
 		Limit:           10,
+		Batching:        batchConf,
 		StartFromOldest: true,
 		CommitPeriod:    "1s",
 		Timeout:         "5s",
@@ -80,13 +86,16 @@ type RedisStreams struct {
 
 	backlogs map[string]string
 
-	aMut        sync.Mutex
-	ackSend     map[string][]string // Acks that can be sent
-	ackPending  map[string][]string // Acks that are pending
-	ackLastSent time.Time
+	aMut       sync.Mutex
+	ackSend    map[string][]string // Acks that can be sent
+	ackPending map[string][]string // Acks that are pending
 
 	stats metrics.Type
 	log   log.Modular
+
+	closeChan  chan struct{}
+	closedChan chan struct{}
+	closeOnce  sync.Once
 }
 
 // NewRedisStreams creates a new RedisStreams input type.
@@ -100,6 +109,8 @@ func NewRedisStreams(
 		backlogs:   make(map[string]string, len(conf.Streams)),
 		ackSend:    make(map[string][]string, len(conf.Streams)),
 		ackPending: make(map[string][]string, len(conf.Streams)),
+		closeChan:  make(chan struct{}),
+		closedChan: make(chan struct{}),
 	}
 
 	for _, str := range conf.Streams {
@@ -126,10 +137,36 @@ func NewRedisStreams(
 		}
 	}
 
+	go r.loop()
 	return r, nil
 }
 
 //------------------------------------------------------------------------------
+
+func (r *RedisStreams) loop() {
+	defer func() {
+		var client *redis.Client
+		r.cMut.Lock()
+		client = r.client
+		r.client = nil
+		r.cMut.Unlock()
+		if client != nil {
+			client.Close()
+		}
+		close(r.closedChan)
+	}()
+	commitTimer := time.NewTicker(r.commitPeriod)
+
+	closed := false
+	for !closed {
+		select {
+		case <-commitTimer.C:
+		case <-r.closeChan:
+			closed = true
+		}
+		r.sendAcks()
+	}
+}
 
 func (r *RedisStreams) addPendingAcks(stream string, ids ...string) {
 	r.aMut.Lock()
@@ -138,6 +175,17 @@ func (r *RedisStreams) addPendingAcks(stream string, ids ...string) {
 		r.ackPending[stream] = acks
 	} else {
 		r.ackPending[stream] = ids
+	}
+	r.aMut.Unlock()
+}
+
+func (r *RedisStreams) addAsyncAcks(stream string, ids ...string) {
+	r.aMut.Lock()
+	if acks, exists := r.ackSend[stream]; exists {
+		acks = append(acks, ids...)
+		r.ackSend[stream] = acks
+	} else {
+		r.ackSend[stream] = ids
 	}
 	r.aMut.Unlock()
 }
@@ -166,24 +214,29 @@ func (r *RedisStreams) sendAcks() {
 	}
 
 	r.aMut.Lock()
-	for str, ids := range r.ackSend {
+	ackSend := r.ackSend
+	r.ackSend = map[string][]string{}
+	r.aMut.Unlock()
+
+	for str, ids := range ackSend {
 		if len(ids) == 0 {
 			continue
 		}
 		if err := r.client.XAck(str, r.conf.ConsumerGroup, ids...).Err(); err != nil {
 			r.log.Errorf("Failed to ack stream %v: %v\n", str, err)
-		} else {
-			r.ackSend[str] = nil
 		}
 	}
-	r.ackLastSent = time.Now()
-	r.aMut.Unlock()
 }
 
 //------------------------------------------------------------------------------
 
 // Connect establishes a connection to a Redis server.
 func (r *RedisStreams) Connect() error {
+	return r.ConnectWithContext(context.Background())
+}
+
+// ConnectWithContext establishes a connection to a Redis server.
+func (r *RedisStreams) ConnectWithContext(ctx context.Context) error {
 	r.cMut.Lock()
 	defer r.cMut.Unlock()
 
@@ -223,8 +276,7 @@ func (r *RedisStreams) Connect() error {
 	return nil
 }
 
-// Read attempts to pop a message from a Redis list.
-func (r *RedisStreams) Read() (types.Message, error) {
+func (r *RedisStreams) read() (types.Message, map[string][]string, error) {
 	var client *redis.Client
 
 	r.cMut.Lock()
@@ -232,7 +284,7 @@ func (r *RedisStreams) Read() (types.Message, error) {
 	r.cMut.Unlock()
 
 	if client == nil {
-		return nil, types.ErrNotConnected
+		return nil, nil, types.ErrNotConnected
 	}
 
 	strs := make([]string, len(r.conf.Streams)*2)
@@ -255,13 +307,14 @@ func (r *RedisStreams) Read() (types.Message, error) {
 
 	if err != nil && err != redis.Nil {
 		if strings.Contains(err.Error(), "i/o timeout") {
-			return nil, types.ErrTimeout
+			return nil, nil, types.ErrTimeout
 		}
 		r.disconnect()
 		r.log.Errorf("Error from redis: %v\n", err)
-		return nil, types.ErrNotConnected
+		return nil, nil, types.ErrNotConnected
 	}
 
+	pendingAcks := map[string][]string{}
 	msg := message.New(nil)
 	for _, strRes := range res {
 		if _, exists := r.backlogs[strRes.Stream]; exists {
@@ -299,13 +352,49 @@ func (r *RedisStreams) Read() (types.Message, error) {
 
 			msg.Append(part)
 		}
-		r.addPendingAcks(strRes.Stream, ids...)
+		if acks, exists := r.ackPending[strRes.Stream]; exists {
+			acks = append(acks, ids...)
+			pendingAcks[strRes.Stream] = acks
+		} else {
+			pendingAcks[strRes.Stream] = ids
+		}
 	}
 
 	if msg.Len() < 1 {
-		return nil, types.ErrTimeout
+		return nil, nil, types.ErrTimeout
 	}
 
+	return msg, pendingAcks, nil
+}
+
+// ReadWithContext attempts to pop a message from a Redis list.
+func (r *RedisStreams) ReadWithContext(ctx context.Context) (types.Message, AsyncAckFn, error) {
+	msg, acks, err := r.read()
+	if err != nil {
+		return nil, nil, err
+	}
+	return msg, func(rctx context.Context, res types.Response) error {
+		if res.Error() != nil {
+			r.log.Errorf("Received error from message batch: %v, shutting down consumer.\n", res.Error())
+			r.CloseAsync()
+			return nil
+		}
+		for str, ids := range acks {
+			r.addAsyncAcks(str, ids...)
+		}
+		return nil
+	}, nil
+}
+
+// Read attempts to pop a message from a Redis list.
+func (r *RedisStreams) Read() (types.Message, error) {
+	msg, acks, err := r.read()
+	if err != nil {
+		return nil, err
+	}
+	for str, ids := range acks {
+		r.addPendingAcks(str, ids...)
+	}
 	return msg, nil
 }
 
@@ -314,12 +403,6 @@ func (r *RedisStreams) Acknowledge(err error) error {
 	if err == nil {
 		r.scheduleAcks()
 	}
-
-	if time.Since(r.ackLastSent) < r.commitPeriod {
-		return nil
-	}
-
-	r.sendAcks()
 	return nil
 }
 
@@ -340,11 +423,18 @@ func (r *RedisStreams) disconnect() error {
 
 // CloseAsync shuts down the RedisStreams input and stops processing requests.
 func (r *RedisStreams) CloseAsync() {
-	r.disconnect()
+	r.closeOnce.Do(func() {
+		close(r.closeChan)
+	})
 }
 
 // WaitForClose blocks until the RedisStreams input has closed down.
 func (r *RedisStreams) WaitForClose(timeout time.Duration) error {
+	select {
+	case <-r.closedChan:
+	case <-time.After(timeout):
+		return types.ErrTimeout
+	}
 	return nil
 }
 

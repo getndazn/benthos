@@ -21,10 +21,10 @@
 package input
 
 import (
-	"github.com/Jeffail/benthos/lib/input/reader"
-	"github.com/Jeffail/benthos/lib/log"
-	"github.com/Jeffail/benthos/lib/metrics"
-	"github.com/Jeffail/benthos/lib/types"
+	"github.com/Jeffail/benthos/v3/lib/input/reader"
+	"github.com/Jeffail/benthos/v3/lib/log"
+	"github.com/Jeffail/benthos/v3/lib/metrics"
+	"github.com/Jeffail/benthos/v3/lib/types"
 )
 
 //------------------------------------------------------------------------------
@@ -37,6 +37,10 @@ Reads files from a path, where each discrete file will be consumed as a single
 message payload. The path can either point to a single file (resulting in only a
 single message) or a directory, in which case the directory will be walked and
 each file found will become a message.
+
+Messages consumed by this input can be processed in parallel, meaning a single
+instance of this input can utilise any number of threads within a
+` + "`pipeline`" + ` section of a config.
 
 ### Metadata
 
@@ -55,11 +59,13 @@ You can access these metadata fields using
 
 // NewFiles creates a new Files input type.
 func NewFiles(conf Config, mgr types.Manager, log log.Modular, stats metrics.Type) (Type, error) {
-	f, err := reader.NewFiles(conf.Files)
-	if err != nil {
+	var f reader.Async
+	var err error
+	if f, err = reader.NewFiles(conf.Files); err != nil {
 		return nil, err
 	}
-	return NewReader("files", reader.NewPreserver(f), log, stats)
+	f = reader.NewAsyncPreserver(f)
+	return NewAsyncReader(TypeFiles, true, f, log, stats)
 }
 
 //------------------------------------------------------------------------------

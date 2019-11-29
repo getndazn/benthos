@@ -27,10 +27,10 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/Jeffail/benthos/lib/log"
-	"github.com/Jeffail/benthos/lib/metrics"
-	"github.com/Jeffail/benthos/lib/types"
-	"github.com/Jeffail/benthos/lib/util/config"
+	"github.com/Jeffail/benthos/v3/lib/log"
+	"github.com/Jeffail/benthos/v3/lib/metrics"
+	"github.com/Jeffail/benthos/v3/lib/types"
+	"github.com/Jeffail/benthos/v3/lib/util/config"
 	yaml "gopkg.in/yaml.v3"
 )
 
@@ -63,6 +63,7 @@ var (
 	TypeCheckInterpolation = "check_interpolation"
 	TypeCount              = "count"
 	TypeJMESPath           = "jmespath"
+	TypeJSONSchema         = "json_schema"
 	TypeNot                = "not"
 	TypeNumber             = "number"
 	TypeMetadata           = "metadata"
@@ -87,6 +88,7 @@ type Config struct {
 	CheckInterpolation CheckInterpolationConfig `json:"check_interpolation" yaml:"check_interpolation"`
 	Count              CountConfig              `json:"count" yaml:"count"`
 	JMESPath           JMESPathConfig           `json:"jmespath" yaml:"jmespath"`
+	JSONSchema         JSONSchemaConfig         `json:"json_schema" yaml:"json_schema"`
 	Not                NotConfig                `json:"not" yaml:"not"`
 	Number             NumberConfig             `json:"number" yaml:"number"`
 	Metadata           MetadataConfig           `json:"metadata" yaml:"metadata"`

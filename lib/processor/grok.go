@@ -25,9 +25,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/Jeffail/benthos/lib/log"
-	"github.com/Jeffail/benthos/lib/metrics"
-	"github.com/Jeffail/benthos/lib/types"
+	"github.com/Jeffail/benthos/v3/lib/log"
+	"github.com/Jeffail/benthos/v3/lib/metrics"
+	"github.com/Jeffail/benthos/v3/lib/types"
 	"github.com/opentracing/opentracing-go"
 	"github.com/trivago/grok"
 )
@@ -43,9 +43,17 @@ pattern returns at least one value a resulting structured object is created
 according to the chosen output format and will replace the payload. Currently
 only json is a valid output format.
 
-This processor respects type hints in the grok patterns, therefore with the
-pattern ` + "`%{WORD:first},%{INT:second:int}`" + ` and a payload of ` + "`foo,1`" + `
-the resulting payload would be ` + "`{\"first\":\"foo\",\"second\":1}`" + `.`,
+Type hints within patterns are respected, therefore with the pattern
+` + "`%{WORD:first},%{INT:second:int}`" + ` and a payload of ` + "`foo,1`" + `
+the resulting payload would be ` + "`{\"first\":\"foo\",\"second\":1}`" + `.
+
+### Performance
+
+This processor currently uses the [Go RE2](https://golang.org/s/re2syntax)
+regular expression engine, which is guaranteed to run in time linear to the size
+of the input. However, this property often makes it less performant than pcre
+based implementations of grok. For more information see
+[https://swtch.com/~rsc/regexp/regexp1.html](https://swtch.com/~rsc/regexp/regexp1.html).`,
 	}
 }
 
@@ -53,23 +61,25 @@ the resulting payload would be ` + "`{\"first\":\"foo\",\"second\":1}`" + `.`,
 
 // GrokConfig contains configuration fields for the Grok processor.
 type GrokConfig struct {
-	Parts       []int    `json:"parts" yaml:"parts"`
-	Patterns    []string `json:"patterns" yaml:"patterns"`
-	RemoveEmpty bool     `json:"remove_empty_values" yaml:"remove_empty_values"`
-	NamedOnly   bool     `json:"named_captures_only" yaml:"named_captures_only"`
-	UseDefaults bool     `json:"use_default_patterns" yaml:"use_default_patterns"`
-	To          string   `json:"output_format" yaml:"output_format"`
+	Parts              []int             `json:"parts" yaml:"parts"`
+	Patterns           []string          `json:"patterns" yaml:"patterns"`
+	RemoveEmpty        bool              `json:"remove_empty_values" yaml:"remove_empty_values"`
+	NamedOnly          bool              `json:"named_captures_only" yaml:"named_captures_only"`
+	UseDefaults        bool              `json:"use_default_patterns" yaml:"use_default_patterns"`
+	To                 string            `json:"output_format" yaml:"output_format"`
+	PatternDefinitions map[string]string `json:"pattern_definitions" yaml:"pattern_definitions"`
 }
 
 // NewGrokConfig returns a GrokConfig with default values.
 func NewGrokConfig() GrokConfig {
 	return GrokConfig{
-		Parts:       []int{},
-		Patterns:    []string{},
-		RemoveEmpty: true,
-		NamedOnly:   true,
-		UseDefaults: true,
-		To:          "json",
+		Parts:              []int{},
+		Patterns:           []string{},
+		RemoveEmpty:        true,
+		NamedOnly:          true,
+		UseDefaults:        true,
+		To:                 "json",
+		PatternDefinitions: make(map[string]string),
 	}
 }
 
@@ -101,6 +111,7 @@ func NewGrok(
 		RemoveEmptyValues:   conf.Grok.RemoveEmpty,
 		NamedCapturesOnly:   conf.Grok.NamedOnly,
 		SkipDefaultPatterns: !conf.Grok.UseDefaults,
+		Patterns:            conf.Grok.PatternDefinitions,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create grok compiler: %v", err)
